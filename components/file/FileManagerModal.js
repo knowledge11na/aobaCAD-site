@@ -1,7 +1,7 @@
 // file: components/file/FileManagerModal.js
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   createFileInFolder,
   createFolder,
@@ -17,9 +17,10 @@ function fmt(ts) {
   if (!ts) return '';
   try {
     const d = new Date(ts);
-    return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(
-      d.getHours()
-    ).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(
+      2,
+      '0'
+    )} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   } catch {
     return '';
   }
@@ -38,6 +39,8 @@ export default function FileManagerModal({
   const [newFolderName, setNewFolderName] = useState('');
   const [fileName, setFileName] = useState('');
 
+  const importInputRef = useRef(null);
+
   // ✅ openした瞬間に「ロード → 無ければdefault作成」を“ロード結果に対して”やる
   useEffect(() => {
     if (!open) return;
@@ -47,7 +50,6 @@ export default function FileManagerModal({
     let next = loaded;
     if (!(loaded?.folders?.length > 0)) {
       next = createFolder(loaded, 'default');
-      // ✅ ここで確定保存（stateの空配列で上書きしない）
       saveFS(next);
     }
 
@@ -58,26 +60,79 @@ export default function FileManagerModal({
   }, [open]);
 
   const folders = fs?.folders ?? [];
-  const activeFolder = useMemo(
-    () => folders.find((f) => f.id === activeFolderId) ?? folders[0] ?? null,
-    [folders, activeFolderId]
-  );
+  const activeFolder = useMemo(() => folders.find((f) => f.id === activeFolderId) ?? folders[0] ?? null, [
+    folders,
+    activeFolderId,
+  ]);
   const files = activeFolder?.files ?? [];
 
-function commit(next) {
-  setFS(next);
-  const r = saveFS(next);
-  if (!r?.ok) {
-    alert(`保存に失敗しました：${r?.reason || 'unknown'}`);
+  function commit(next) {
+    setFS(next);
+    const r = saveFS(next);
+    if (!r?.ok) alert(`保存に失敗しました：${r?.reason || 'unknown'}`);
   }
-}
+
+  // ===== Export / Import =====
+  function exportJson() {
+    try {
+      const blob = new Blob([JSON.stringify(fs, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'cadsite_fs.json';
+      a.click();
+
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error(e);
+      alert('エクスポートに失敗しました');
+    }
+  }
+
+  function importJsonText(text) {
+    const data = JSON.parse(String(text || '{}'));
+
+    // 最低限の形式チェック
+    if (!data || typeof data !== 'object' || !Array.isArray(data.folders)) {
+      throw new Error('invalid format');
+    }
+    // folders[] の最低限の形を補正
+    data.folders = data.folders.map((f) => ({
+      id: f?.id ?? `folder_${Date.now()}_${Math.floor(Math.random() * 100000)}`,
+      name: String(f?.name ?? 'folder'),
+      files: Array.isArray(f?.files) ? f.files : [],
+    }));
+
+    commit(data);
+    setActiveFolderId(data?.folders?.[0]?.id ?? null);
+  }
+
+  function importJsonFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        importJsonText(reader.result);
+        alert('インポートしました');
+      } catch (e) {
+        console.error(e);
+        alert('インポート失敗：JSON形式が不正です');
+      } finally {
+        // 同じファイルを連続で選べるようにリセット
+        if (importInputRef.current) importInputRef.current.value = '';
+      }
+    };
+    reader.readAsText(file);
+  }
 
   if (!open) return null;
 
   return (
     <div
       className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-[2px] p-4"
-      onMouseDown={(e) => {
+      onPointerDown={(e) => {
+        // 背景タップで閉じる（スマホ対応）
         if (e.target === e.currentTarget) onClose?.();
       }}
     >
@@ -89,7 +144,7 @@ function commit(next) {
           </button>
         </div>
 
-        <div className="grid grid-cols-[260px_1fr] min-h-[420px]">
+        <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] min-h-[420px]">
           {/* 左：フォルダ */}
           <div className="border-r p-3 space-y-3 bg-white">
             <div className="text-xs font-semibold text-gray-600">フォルダ</div>
@@ -169,14 +224,14 @@ function commit(next) {
 
           {/* 右：ファイル */}
           <div className="p-3 space-y-3 bg-white">
-            <div className="flex items-end justify-between gap-3">
+            <div className="flex items-end justify-between gap-3 flex-wrap">
               <div>
                 <div className="text-xs font-semibold text-gray-600">ファイル（{activeFolder?.name || ''}）</div>
                 <div className="text-[11px] text-gray-500">※ ブラウザ保存（localStorage）</div>
               </div>
 
               {mode === 'save' ? (
-                <div className="flex gap-2 items-end">
+                <div className="flex gap-2 items-end flex-wrap">
                   <div>
                     <div className="text-[11px] text-gray-500 mb-1">ファイル名</div>
                     <input
@@ -219,7 +274,10 @@ function commit(next) {
                   <div className="p-3 text-sm text-gray-500">このフォルダにはファイルがありません</div>
                 ) : (
                   files.map((f) => (
-                    <div key={f.id} className="grid grid-cols-[1fr_160px_240px] items-center px-3 py-2 border-b last:border-b-0 bg-white">
+                    <div
+                      key={f.id}
+                      className="grid grid-cols-[1fr_160px_240px] items-center px-3 py-2 border-b last:border-b-0 bg-white"
+                    >
                       <div className="truncate text-sm font-semibold">{f.name || 'file'}</div>
                       <div className="text-xs text-gray-500">{fmt(f.savedAt)}</div>
                       <div className="flex gap-2 justify-end">
@@ -279,7 +337,27 @@ function commit(next) {
               </div>
             </div>
 
-            <div className="flex gap-2">
+            {/* Export / Import / Danger */}
+            <div className="flex gap-2 flex-wrap items-center">
+              <button
+                className="rounded border px-3 py-2 text-sm hover:bg-gray-50 bg-white"
+                type="button"
+                onClick={exportJson}
+              >
+                エクスポート（JSON）
+              </button>
+
+              <label className="rounded border px-3 py-2 text-sm hover:bg-gray-50 bg-white cursor-pointer">
+                インポート（JSON）
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept="application/json"
+                  className="hidden"
+                  onChange={(e) => importJsonFile(e.target.files?.[0])}
+                />
+              </label>
+
               <button
                 className="rounded border px-3 py-2 text-sm hover:bg-gray-50 bg-white"
                 type="button"
@@ -297,7 +375,7 @@ function commit(next) {
         </div>
 
         <div className="border-t px-4 py-3 text-[11px] text-gray-500 bg-white">
-          今はブラウザ保存です。次の段階で「サーバに保存 → スマホで同じフォルダを見る」に拡張できます。
+          今はブラウザ保存です。エクスポート/インポートで端末間共有できます。次の段階で「サーバに保存 → スマホで同じフォルダを見る」に拡張できます。
         </div>
       </div>
     </div>

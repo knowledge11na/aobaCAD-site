@@ -5,43 +5,38 @@ import { useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 
 /**
- * 要望仕様:
- * - ホイール: ズーム（感度 adjustable）
- * - 中クリック押し込みドラッグ: 回転
- * - 左右同時押しドラッグ: 平行移動
- * - 左だけ/右だけドラッグは何もしない（今後の選択操作のため）
+ * Mouse:
+ * - wheel: zoom
+ * - middle drag: rotate
+ * - left+right drag: pan
  *
- * 重要:
- * - window に pointermove/up を貼ると UI(input等) が死るので禁止
- * - PointerCapture を使って、ドラッグ中だけ canvas にイベントを戻す
- *
- * 追加:
- * - ref で setView(viewName) を呼べる（視点切り替え）
+ * Touch:
+ * - 1 finger: rotate
+ * - 2 finger: pan (move midpoint) + zoom (pinch)
  */
 const CustomCameraControls = forwardRef(function CustomCameraControls(
-  {
-    enabled = true,
-    zoomSensitivity = 1.0,
-    rotateSensitivity = 1.0,
-    panSensitivity = 1.0,
-  },
+  { enabled = true, zoomSensitivity = 1.0, rotateSensitivity = 1.0, panSensitivity = 1.0 },
   ref
 ) {
   const { camera, gl } = useThree();
-
-  const stateRef = useRef({
-    isDragging: false,
-    pointerId: null,
-    lastX: 0,
-    lastY: 0,
-    mode: 'none', // 'rotate' | 'pan' | 'none'
-  });
 
   const target = useMemo(() => new THREE.Vector3(0, 0, 0), []);
   const spherical = useMemo(() => new THREE.Spherical(), []);
   const vTemp = useMemo(() => new THREE.Vector3(), []);
   const vRight = useMemo(() => new THREE.Vector3(), []);
   const vUp = useMemo(() => new THREE.Vector3(), []);
+
+  const stateRef = useRef({
+    isDragging: false,
+    pointerId: null,
+    lastX: 0,
+    lastY: 0,
+    mode: 'none', // mouse: 'rotate'|'pan'|'none'
+    // touch
+    pointers: new Map(), // pointerId -> {x,y}
+    touchPrevDist: 0,
+    touchPrevMid: { x: 0, y: 0 },
+  });
 
   function syncFromCamera() {
     vTemp.copy(camera.position).sub(target);
@@ -68,7 +63,6 @@ const CustomCameraControls = forwardRef(function CustomCameraControls(
 
     spherical.theta -= (dx / element.clientWidth) * Math.PI * 2 * rotSpeed * 100;
     spherical.phi -= (dy / element.clientHeight) * Math.PI * rotSpeed * 100;
-
     spherical.phi = Math.max(0.001, Math.min(Math.PI - 0.001, spherical.phi));
   }
 
@@ -85,33 +79,30 @@ const CustomCameraControls = forwardRef(function CustomCameraControls(
     vUp.copy(camera.up).normalize();
     vRight.crossVectors(vUp, vTemp).normalize();
 
-    const move = new THREE.Vector3()
-      .addScaledVector(vRight, panX)
-      .addScaledVector(vUp, panY);
-
+    const move = new THREE.Vector3().addScaledVector(vRight, panX).addScaledVector(vUp, panY);
     target.add(move);
   }
 
   function zoomByWheel(deltaY) {
     const base = 0.0012;
     const k = base * zoomSensitivity;
-
     const zoomFactor = Math.exp(deltaY * k);
     spherical.radius *= zoomFactor;
+    spherical.radius = Math.max(100, Math.min(300000, spherical.radius));
+  }
 
-    // ✅ mmスケール前提：寄り過ぎ/遠すぎ防止（必要なら後で調整）
+  function zoomByPinchRatio(ratio) {
+    // ratio > 1 で拡大、<1 で縮小（直感的に）
+    const k = 1 / Math.max(0.01, ratio);
+    spherical.radius *= Math.pow(k, zoomSensitivity);
     spherical.radius = Math.max(100, Math.min(300000, spherical.radius));
   }
 
   // ===== 視点切り替え API =====
   function setView(viewName) {
     syncFromCamera();
-
     const clampPhi = (phi) => Math.max(0.001, Math.min(Math.PI - 0.001, phi));
 
-    // three.js Spherical:
-    // theta: Y軸周り（0 は +Z 方向）
-    // phi  : 上からの角度（0 は真上）
     if (viewName === 'front') {
       spherical.theta = 0;
       spherical.phi = Math.PI / 2;
@@ -139,7 +130,6 @@ const CustomCameraControls = forwardRef(function CustomCameraControls(
 
   useImperativeHandle(ref, () => ({
     setView,
-    // おまけ：必要なら後で使える
     setTarget: (x, y, z) => {
       target.set(x, y, z);
       syncFromCamera();
@@ -154,28 +144,108 @@ const CustomCameraControls = forwardRef(function CustomCameraControls(
     syncFromCamera();
     applyToCamera();
 
+    const updateTouchGesture = () => {
+      const pts = Array.from(stateRef.current.pointers.values());
+      if (pts.length === 1) {
+        // 1本指：回転（差分は pointermove 側で dx/dy を使う）
+        stateRef.current.touchPrevDist = 0;
+        return;
+      }
+      if (pts.length >= 2) {
+        const a = pts[0];
+        const b = pts[1];
+
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const dxMid = mid.x - stateRef.current.touchPrevMid.x;
+        const dyMid = mid.y - stateRef.current.touchPrevMid.y;
+
+        const dist = Math.hypot(a.x - b.x, a.y - b.y);
+
+        // pan（2本指の中点移動）
+        if (Number.isFinite(stateRef.current.touchPrevMid.x)) {
+          panBy(dxMid, dyMid);
+        }
+
+        // zoom（ピンチ）
+        if (stateRef.current.touchPrevDist > 0 && dist > 0) {
+          const ratio = dist / stateRef.current.touchPrevDist;
+          zoomByPinchRatio(ratio);
+        }
+
+        stateRef.current.touchPrevDist = dist;
+        stateRef.current.touchPrevMid = mid;
+
+        applyToCamera();
+      }
+    };
+
     const onPointerDown = (e) => {
       if (!enabled) return;
 
-      // 中ボタン押し込みのときブラウザのオートスクロールを出さない
-      if (e.button === 1) e.preventDefault();
+      // iOSで二本指スクロール等を抑制
+      e.preventDefault?.();
 
-      stateRef.current.isDragging = true;
-      stateRef.current.pointerId = e.pointerId;
-      stateRef.current.lastX = e.clientX;
-      stateRef.current.lastY = e.clientY;
-      stateRef.current.mode = setModeFromButtons(e.buttons);
+      if (e.button === 1) e.preventDefault();
 
       try {
         el.setPointerCapture?.(e.pointerId);
       } catch {}
 
       syncFromCamera();
+
+      if (e.pointerType === 'touch') {
+        stateRef.current.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+        const pts = Array.from(stateRef.current.pointers.values());
+        if (pts.length >= 2) {
+          const a = pts[0];
+          const b = pts[1];
+          stateRef.current.touchPrevDist = Math.hypot(a.x - b.x, a.y - b.y);
+          stateRef.current.touchPrevMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        } else {
+          stateRef.current.touchPrevDist = 0;
+          stateRef.current.touchPrevMid = { x: e.clientX, y: e.clientY };
+        }
+
+        stateRef.current.isDragging = true;
+        return;
+      }
+
+      // mouse
+      stateRef.current.isDragging = true;
+      stateRef.current.pointerId = e.pointerId;
+      stateRef.current.lastX = e.clientX;
+      stateRef.current.lastY = e.clientY;
+      stateRef.current.mode = setModeFromButtons(e.buttons);
     };
 
     const onPointerMove = (e) => {
       if (!enabled) return;
       if (!stateRef.current.isDragging) return;
+
+      if (e.pointerType === 'touch') {
+        if (!stateRef.current.pointers.has(e.pointerId)) return;
+        stateRef.current.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+        const pts = Array.from(stateRef.current.pointers.values());
+        if (pts.length === 1) {
+          // 1本指 rotate
+          const dx = e.movementX ?? e.clientX - (stateRef.current.lastX || e.clientX);
+          const dy = e.movementY ?? e.clientY - (stateRef.current.lastY || e.clientY);
+          stateRef.current.lastX = e.clientX;
+          stateRef.current.lastY = e.clientY;
+
+          rotateBy(dx, dy);
+          applyToCamera();
+          return;
+        }
+
+        // 2本指 pan+zoom
+        updateTouchGesture();
+        return;
+      }
+
+      // mouse
       if (stateRef.current.pointerId != null && e.pointerId !== stateRef.current.pointerId) return;
 
       const dx = e.clientX - stateRef.current.lastX;
@@ -197,6 +267,31 @@ const CustomCameraControls = forwardRef(function CustomCameraControls(
 
     const endDrag = (e) => {
       if (!enabled) return;
+
+      if (e.pointerType === 'touch') {
+        stateRef.current.pointers.delete(e.pointerId);
+        if (stateRef.current.pointers.size === 0) {
+          stateRef.current.isDragging = false;
+          stateRef.current.touchPrevDist = 0;
+        } else {
+          // 残ってる指で基準を作り直す
+          const pts = Array.from(stateRef.current.pointers.values());
+          if (pts.length >= 2) {
+            const a = pts[0];
+            const b = pts[1];
+            stateRef.current.touchPrevDist = Math.hypot(a.x - b.x, a.y - b.y);
+            stateRef.current.touchPrevMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+          } else {
+            stateRef.current.touchPrevDist = 0;
+          }
+        }
+
+        try {
+          el.releasePointerCapture?.(e.pointerId);
+        } catch {}
+        return;
+      }
+
       if (!stateRef.current.isDragging) return;
       if (stateRef.current.pointerId != null && e.pointerId !== stateRef.current.pointerId) return;
 
@@ -212,16 +307,16 @@ const CustomCameraControls = forwardRef(function CustomCameraControls(
 
     const onWheel = (e) => {
       if (!enabled) return;
-
       e.preventDefault();
       syncFromCamera();
       zoomByWheel(e.deltaY);
       applyToCamera();
     };
 
-    const onContextMenu = (e) => {
-      e.preventDefault();
-    };
+    const onContextMenu = (e) => e.preventDefault();
+
+    // 重要：タッチ操作で画面スクロールしないように
+    el.style.touchAction = 'none';
 
     el.addEventListener('pointerdown', onPointerDown, { passive: false });
     el.addEventListener('pointermove', onPointerMove, { passive: false });
