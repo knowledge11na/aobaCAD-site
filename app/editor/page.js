@@ -535,8 +535,9 @@ function SteelAddPanel({ catalog, draft, setDraft, onPlace, onCancel, disabled }
   );
 }
 
-function InspectorPanel({ obj, onChange }) {
-  const [posStr, setPosStr] = useState(['0', '0', '0']);
+function InspectorPanel({ obj, onChange, selectedCount = 1, onSetColor }) {
+   const [posStr, setPosStr] = useState(['0', '0', '0']);
+  const [applyAll, setApplyAll] = useState(true);
 
   useEffect(() => {
     if (!obj) return;
@@ -575,9 +576,83 @@ function InspectorPanel({ obj, onChange }) {
     onChange?.({ position: p });
   };
 
-  return (
-    <div className="space-y-2 rounded-lg border p-2">
-      <div className="text-xs font-semibold">選択中：{obj.name ?? obj.type}</div>
+    return (
+     <div className="space-y-2 rounded-lg border p-2">
+       <div className="text-xs font-semibold">選択中：{obj.name ?? obj.type}</div>
+
+      {/* ✅ 色（ワンタッチ） */}
+      <div>
+        <div className="flex items-center justify-between">
+          <div className="text-[10px] text-gray-500 mb-1">色 Color</div>
+          <label className="flex items-center gap-1 text-[10px] text-gray-600 select-none">
+            <input
+              type="checkbox"
+              checked={applyAll}
+              onChange={(e) => setApplyAll(e.target.checked)}
+            />
+            選択全体に適用（{selectedCount}）
+          </label>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* 現在色プレビュー */}
+          <div
+            className="h-6 w-10 rounded border"
+            style={{ background: obj.color ?? '#bfbfbf' }}
+            title={obj.color ?? '#bfbfbf'}
+          />
+
+          {/* 直接選択（OSカラーピッカー） */}
+          <input
+            className="h-8 w-12 rounded border p-1"
+            type="color"
+            value={obj.color ?? '#bfbfbf'}
+            onChange={(e) => onSetColor?.(e.target.value, applyAll)}
+            title="カラーピッカー"
+          />
+
+          {/* 16進入力（任意） */}
+          <input
+            className="flex-1 rounded border px-2 py-1 text-xs"
+            type="text"
+            value={obj.color ?? '#bfbfbf'}
+            onChange={(e) => {
+              const v = e.target.value.trim();
+              // #RGB / #RRGGBB だけ許可（途中入力は許すなら条件ゆるめてもOK）
+              if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v)) return;
+              onSetColor?.(v, applyAll);
+            }}
+            placeholder="#bfbfbf"
+          />
+        </div>
+
+        {/* ワンタッチパレット */}
+        <div className="mt-2 grid grid-cols-6 gap-2">
+          {[
+            '#bfbfbf', // 標準
+            '#808080',
+            '#404040',
+            '#ffffff',
+            '#111827', // ほぼ黒
+            '#ef4444', // 赤
+            '#f59e0b', // オレンジ
+            '#eab308', // 黄
+            '#22c55e', // 緑
+            '#06b6d4', // シアン
+            '#3b82f6', // 青
+            '#a855f7', // 紫
+          ].map((c) => (
+            <button
+              key={c}
+              type="button"
+              className="h-7 w-full rounded border hover:opacity-90"
+              style={{ background: c }}
+              title={c}
+              onClick={() => onSetColor?.(c, applyAll)}
+            />
+          ))}
+        </div>
+      </div>
 
       <div>
         <div className="text-[10px] text-gray-500 mb-1">位置 Position (mm)</div>
@@ -1354,9 +1429,28 @@ function openPlateInsert() {
     commit(next);
   }
 
-  function updatePrimary(patch) {
+    function updatePrimary(patch) {
+     if (!primaryId) return;
+     updateObject(primaryId, patch);
+   }
+
+  function applyColorToObject(o, color) {
+    if (o.type === 'fused') {
+      return {
+        ...o,
+        color,
+        sources: Array.isArray(o.sources) ? o.sources.map((s) => ({ ...s, color })) : o.sources,
+      };
+    }
+    return { ...o, color };
+  }
+
+  function setColorForSelection(color, applyAll) {
     if (!primaryId) return;
-    updateObject(primaryId, patch);
+    const ids = applyAll ? expandedShapeSelection : [primaryId];
+    const set = new Set(ids);
+    const next = objects.map((o) => (set.has(o.id) ? applyColorToObject(o, color) : o));
+    commit(next);
   }
 
   function livePatchObject(id, patch) {
@@ -2318,8 +2412,14 @@ onPickPlate={(payload, options) => {
               <AddShapePanel draft={addDraft} setDraft={setAddDraft} onPlace={placeDraft} onCancel={() => setAddDraft(null)} />
             ) : null}
 
-            {currentTool !== 'sketch2d' && currentTool !== 'extrude' ? <InspectorPanel obj={primaryObject} onChange={(patch) => updatePrimary(patch)} /> : null}
-
+{currentTool !== 'sketch2d' && currentTool !== 'extrude' ? (
+  <InspectorPanel
+    obj={primaryObject}
+    onChange={(patch) => updatePrimary(patch)}
+    selectedCount={expandedShapeSelection.length}
+    onSetColor={(color, applyAll) => setColorForSelection(color, applyAll)}
+  />
+) : null}
             {currentTool === 'sketch2d' ? (
               <SketchToolPanel
                 step={sketchMode?.step ?? 'pickFace'}

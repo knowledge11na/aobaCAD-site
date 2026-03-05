@@ -46,6 +46,7 @@ export default function EditorToolbar({
 
   // ✅ 追加：切板挿入
   onOpenPlateInsert,
+
 }) {
   const [openFile, setOpenFile] = useState(false);
   const [openView, setOpenView] = useState(false);
