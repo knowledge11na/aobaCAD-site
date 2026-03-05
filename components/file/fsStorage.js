@@ -20,9 +20,27 @@ export function loadFS() {
   return data;
 }
 
+/**
+ * 保存結果を返す（本番での切り分け用）
+ * ok=false のとき reason に例外名/メッセージが入る
+ */
 export function saveFS(next) {
-  if (typeof window === 'undefined') return;
-  window.localStorage.setItem(LS_KEY, JSON.stringify(next));
+  if (typeof window === 'undefined') return { ok: false, reason: 'no-window' };
+
+  try {
+    const json = JSON.stringify(next);
+    window.localStorage.setItem(LS_KEY, json);
+
+    // 念のため読み戻しチェック（まれな失敗検知）
+    const check = window.localStorage.getItem(LS_KEY);
+    if (!check) return { ok: false, reason: 'write-but-empty' };
+
+    return { ok: true };
+  } catch (e) {
+    console.error('[saveFS] failed:', e);
+    const reason = String(e?.name || e?.message || e);
+    return { ok: false, reason };
+  }
 }
 
 export function uid(prefix = 'id') {
@@ -47,6 +65,7 @@ export function sanitizeObjectsForSave(objects) {
         return ss;
       });
     }
+
     return base;
   };
 

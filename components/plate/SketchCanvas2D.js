@@ -62,11 +62,19 @@ export default function SketchCanvas2D({
     return pts;
   }, [lines]);
 
-  function getCanvasPoint(e) {
-    const c = canvasRef.current;
-    const r = c.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
-  }
+function getCanvasPoint(e) {
+  const c = canvasRef.current;
+  const r = c.getBoundingClientRect();
+
+  // 表示サイズ（CSS）→ 内部サイズ（canvas.width/height）へ変換
+  const scaleX = c.width / r.width;
+  const scaleY = c.height / r.height;
+
+  const x = (e.clientX - r.left) * scaleX;
+  const y = (e.clientY - r.top) * scaleY;
+
+  return { x, y };
+}
 
   function findSnap(p) {
     let best = null;

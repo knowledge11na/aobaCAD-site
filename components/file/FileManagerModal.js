@@ -29,7 +29,7 @@ export default function FileManagerModal({
   open,
   mode, // 'save' | 'open'
   onClose,
-  getCurrentPayload, // () => { objects: [...] }
+  getCurrentPayload, // () => payload
   onOpenPayload, // (payload) => void
 }) {
   const [fs, setFS] = useState({ folders: [] });
@@ -38,24 +38,23 @@ export default function FileManagerModal({
   const [newFolderName, setNewFolderName] = useState('');
   const [fileName, setFileName] = useState('');
 
-  // ✅ モーダル中は背景スクロール禁止
-  useEffect(() => {
-    if (!open) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [open]);
-
+  // ✅ openした瞬間に「ロード → 無ければdefault作成」を“ロード結果に対して”やる
   useEffect(() => {
     if (!open) return;
 
-    const data = loadFS();
-    setFS(data);
+    const loaded = loadFS() ?? { folders: [] };
 
-    const first = data?.folders?.[0]?.id ?? null;
-    setActiveFolderId((prev) => prev ?? first);
+    let next = loaded;
+    if (!(loaded?.folders?.length > 0)) {
+      next = createFolder(loaded, 'default');
+      // ✅ ここで確定保存（stateの空配列で上書きしない）
+      saveFS(next);
+    }
+
+    setFS(next);
+
+    const firstId = next?.folders?.[0]?.id ?? null;
+    setActiveFolderId((prev) => prev ?? firstId);
   }, [open]);
 
   const folders = fs?.folders ?? [];
@@ -65,39 +64,34 @@ export default function FileManagerModal({
   );
   const files = activeFolder?.files ?? [];
 
-  function commit(next) {
-    setFS(next);
-    saveFS(next);
+function commit(next) {
+  setFS(next);
+  const r = saveFS(next);
+  if (!r?.ok) {
+    alert(`保存に失敗しました：${r?.reason || 'unknown'}`);
   }
-
-  useEffect(() => {
-    if (!open) return;
-    if (folders.length > 0) return;
-
-    const next = createFolder(fs, 'default');
-    commit(next);
-    setActiveFolderId(next.folders?.[0]?.id ?? null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+}
 
   if (!open) return null;
 
   return (
     <div
       className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-[2px] p-4"
-      onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose?.();
+      }}
     >
       <div className="w-full max-w-4xl rounded-xl bg-white shadow-2xl overflow-hidden ring-1 ring-black/10">
-        <div className="flex items-center justify-between border-b px-4 py-3">
+        <div className="flex items-center justify-between border-b px-4 py-3 bg-white">
           <div className="font-semibold">{mode === 'save' ? '保存' : '開く'}</div>
-          <button className="rounded border px-3 py-1 text-sm hover:bg-gray-50" onClick={onClose} type="button">
+          <button className="rounded border px-3 py-1 text-sm hover:bg-gray-50 bg-white" onClick={onClose} type="button">
             閉じる
           </button>
         </div>
 
         <div className="grid grid-cols-[260px_1fr] min-h-[420px]">
           {/* 左：フォルダ */}
-          <div className="border-r p-3 space-y-3">
+          <div className="border-r p-3 space-y-3 bg-white">
             <div className="text-xs font-semibold text-gray-600">フォルダ</div>
 
             <div className="space-y-1 max-h-[280px] overflow-auto">
@@ -107,7 +101,7 @@ export default function FileManagerModal({
                   <button
                     key={f.id}
                     className={`w-full text-left rounded border px-2 py-2 text-sm ${
-                      active ? 'bg-gray-100 border-gray-400' : 'hover:bg-gray-50'
+                      active ? 'bg-gray-100 border-gray-400' : 'hover:bg-gray-50 bg-white'
                     }`}
                     onClick={() => setActiveFolderId(f.id)}
                     type="button"
@@ -120,16 +114,16 @@ export default function FileManagerModal({
               })}
             </div>
 
-            <div className="rounded border p-2 space-y-2">
+            <div className="rounded border p-2 space-y-2 bg-white">
               <div className="text-[11px] text-gray-600 font-semibold">新規フォルダ</div>
               <input
-                className="w-full rounded border px-2 py-1 text-sm"
+                className="w-full rounded border px-2 py-1 text-sm bg-white"
                 placeholder="フォルダ名"
                 value={newFolderName}
                 onChange={(e) => setNewFolderName(e.target.value)}
               />
               <button
-                className="w-full rounded border px-2 py-1 text-sm hover:bg-gray-50"
+                className="w-full rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
                 type="button"
                 onClick={() => {
                   const nm = (newFolderName || '新規フォルダ').trim();
@@ -146,7 +140,7 @@ export default function FileManagerModal({
             {activeFolder ? (
               <div className="flex gap-2">
                 <button
-                  className="flex-1 rounded border px-2 py-1 text-sm hover:bg-gray-50"
+                  className="flex-1 rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
                   type="button"
                   onClick={() => {
                     const nm = window.prompt('フォルダ名を入力', activeFolder.name || '');
@@ -158,7 +152,7 @@ export default function FileManagerModal({
                   名前変更
                 </button>
                 <button
-                  className="flex-1 rounded border px-2 py-1 text-sm hover:bg-gray-50"
+                  className="flex-1 rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
                   type="button"
                   onClick={() => {
                     if (!confirm('このフォルダを削除しますか？（中のファイルも消えます）')) return;
@@ -174,7 +168,7 @@ export default function FileManagerModal({
           </div>
 
           {/* 右：ファイル */}
-          <div className="p-3 space-y-3">
+          <div className="p-3 space-y-3 bg-white">
             <div className="flex items-end justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold text-gray-600">ファイル（{activeFolder?.name || ''}）</div>
@@ -186,14 +180,14 @@ export default function FileManagerModal({
                   <div>
                     <div className="text-[11px] text-gray-500 mb-1">ファイル名</div>
                     <input
-                      className="w-56 rounded border px-2 py-1 text-sm"
+                      className="w-56 rounded border px-2 py-1 text-sm bg-white"
                       value={fileName}
                       onChange={(e) => setFileName(e.target.value)}
                       placeholder="例）架台_001"
                     />
                   </div>
                   <button
-                    className="rounded border px-3 py-2 text-sm hover:bg-gray-50"
+                    className="rounded border px-3 py-2 text-sm hover:bg-gray-50 bg-white"
                     type="button"
                     onClick={() => {
                       if (!activeFolder) return;
@@ -213,7 +207,7 @@ export default function FileManagerModal({
               ) : null}
             </div>
 
-            <div className="rounded border overflow-hidden">
+            <div className="rounded border overflow-hidden bg-white">
               <div className="grid grid-cols-[1fr_160px_240px] bg-gray-50 border-b px-3 py-2 text-xs font-semibold text-gray-600">
                 <div>名前</div>
                 <div>更新</div>
@@ -225,13 +219,13 @@ export default function FileManagerModal({
                   <div className="p-3 text-sm text-gray-500">このフォルダにはファイルがありません</div>
                 ) : (
                   files.map((f) => (
-                    <div key={f.id} className="grid grid-cols-[1fr_160px_240px] items-center px-3 py-2 border-b last:border-b-0">
+                    <div key={f.id} className="grid grid-cols-[1fr_160px_240px] items-center px-3 py-2 border-b last:border-b-0 bg-white">
                       <div className="truncate text-sm font-semibold">{f.name || 'file'}</div>
                       <div className="text-xs text-gray-500">{fmt(f.savedAt)}</div>
                       <div className="flex gap-2 justify-end">
                         {mode === 'open' ? (
                           <button
-                            className="rounded border px-2 py-1 text-sm hover:bg-gray-50"
+                            className="rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
                             type="button"
                             onClick={() => {
                               if (!confirm(`「${f.name}」を開きますか？（現在の作業は上書きされません）`)) return;
@@ -245,7 +239,7 @@ export default function FileManagerModal({
 
                         {mode === 'save' ? (
                           <button
-                            className="rounded border px-2 py-1 text-sm hover:bg-gray-50"
+                            className="rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
                             type="button"
                             onClick={() => {
                               if (!activeFolder) return;
@@ -267,7 +261,7 @@ export default function FileManagerModal({
                         ) : null}
 
                         <button
-                          className="rounded border px-2 py-1 text-sm hover:bg-gray-50"
+                          className="rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
                           type="button"
                           onClick={() => {
                             if (!activeFolder) return;
@@ -287,7 +281,7 @@ export default function FileManagerModal({
 
             <div className="flex gap-2">
               <button
-                className="rounded border px-3 py-2 text-sm hover:bg-gray-50"
+                className="rounded border px-3 py-2 text-sm hover:bg-gray-50 bg-white"
                 type="button"
                 onClick={() => {
                   if (!confirm('保存データを全消去しますか？')) return;
@@ -302,7 +296,7 @@ export default function FileManagerModal({
           </div>
         </div>
 
-        <div className="border-t px-4 py-3 text-[11px] text-gray-500">
+        <div className="border-t px-4 py-3 text-[11px] text-gray-500 bg-white">
           今はブラウザ保存です。次の段階で「サーバに保存 → スマホで同じフォルダを見る」に拡張できます。
         </div>
       </div>
