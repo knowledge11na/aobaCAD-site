@@ -215,6 +215,38 @@ function buildGeometryFromShape(shape) {
 
   if (shape.type === 'fused') return buildFusedGeometry(shape);
 
+  // ✅ plate：__geometry が無い（複製後など）場合でも profile から再生成する
+  if (shape.type === 'plate') {
+    const t = Math.max(0.1, Number(shape?.dims?.t ?? shape?.t ?? shape?.thickness ?? 12) || 12);
+    const ptsRaw = shape?.profile?.points ?? shape?.profile ?? [];
+    const pts = (Array.isArray(ptsRaw) ? ptsRaw : []).map((p) => {
+      if (Array.isArray(p)) return [Number(p[0]) || 0, Number(p[1]) || 0];
+      if (p && typeof p === 'object') return [Number(p.x) || 0, Number(p.y) || 0];
+      return [0, 0];
+    });
+    if (pts.length < 3) return new THREE.BoxGeometry(MM_BASE, MM_BASE, MM_BASE);
+
+    const closed =
+      !!shape?.profile?.closed ||
+      (pts[0][0] === pts[pts.length - 1][0] && pts[0][1] === pts[pts.length - 1][1]);
+
+    const sh = new THREE.Shape();
+    sh.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) sh.lineTo(pts[i][0], pts[i][1]);
+    if (!closed) sh.lineTo(pts[0][0], pts[0][1]);
+
+    const geo = new THREE.ExtrudeGeometry(sh, {
+      depth: t,
+      bevelEnabled: false,
+      steps: 1,
+      curveSegments: 16,
+    });
+    // 挿入時と向きを合わせる（あなたが insert 側で回してる前提）
+    geo.rotateX(-Math.PI / 2);
+    geo.computeVertexNormals();
+    return geo;
+  }
+
   if (shape.type === 'cube' || shape.type === 'box') {
     const s = shape.size ?? [MM_BASE, MM_BASE, MM_BASE];
     return new THREE.BoxGeometry(s[0], s[1], s[2]);
