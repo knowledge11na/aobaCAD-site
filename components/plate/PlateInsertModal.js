@@ -1,0 +1,244 @@
+// file: components/plate/PlateInsertModal.js
+'use client';
+
+import { useEffect, useMemo, useState } from 'react';
+import {
+  createPlateFolder,
+  deletePlateFile,
+  deletePlateFolder,
+  loadPlateFS,
+  renamePlateFolder,
+  savePlateFS,
+} from './plateStorage';
+
+function fmt(ts) {
+  if (!ts) return '';
+  try {
+    const d = new Date(ts);
+    return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(
+      d.getHours()
+    ).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  } catch {
+    return '';
+  }
+}
+
+export default function PlateInsertModal({
+  open,
+  onClose,
+  onPickPlate, // (payload, options) => void
+}) {
+  const [fs, setFS] = useState({ folders: [] });
+  const [activeFolderId, setActiveFolderId] = useState(null);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [insertMode, setInsertMode] = useState('replace'); // 'replace' | 'append'
+
+  useEffect(() => {
+    if (!open) return;
+
+    const loaded = loadPlateFS() ?? { folders: [] };
+    let next = loaded;
+
+    if (!(loaded?.folders?.length > 0)) {
+      next = createPlateFolder(loaded, 'default');
+      savePlateFS(next);
+    }
+
+    setFS(next);
+    const firstId = next?.folders?.[0]?.id ?? null;
+    setActiveFolderId((prev) => prev ?? firstId);
+  }, [open]);
+
+  const folders = fs?.folders ?? [];
+  const activeFolder = useMemo(
+    () => folders.find((f) => f.id === activeFolderId) ?? folders[0] ?? null,
+    [folders, activeFolderId]
+  );
+  const files = activeFolder?.files ?? [];
+
+  function commit(next) {
+    setFS(next);
+    const r = savePlateFS(next);
+    if (!r?.ok) alert(`保存に失敗しました：${r?.reason || 'unknown'}`);
+  }
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-[2px] p-4"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose?.();
+      }}
+    >
+      <div className="w-full max-w-4xl rounded-xl bg-white shadow-2xl overflow-hidden ring-1 ring-black/10">
+        <div className="flex items-center justify-between border-b px-4 py-3 bg-white">
+          <div className="font-semibold">切板挿入（保存済み切板を選択）</div>
+          <button className="rounded border px-3 py-1 text-sm hover:bg-gray-50 bg-white" onClick={onClose} type="button">
+            閉じる
+          </button>
+        </div>
+
+        <div className="grid grid-cols-[260px_1fr] min-h-[420px]">
+          {/* 左：フォルダ */}
+          <div className="border-r p-3 space-y-3 bg-white">
+            <div className="text-xs font-semibold text-gray-600">フォルダ</div>
+
+            <div className="space-y-1 max-h-[280px] overflow-auto">
+              {folders.map((f) => {
+                const active = f.id === (activeFolder?.id ?? null);
+                return (
+                  <button
+                    key={f.id}
+                    className={`w-full text-left rounded border px-2 py-2 text-sm ${
+                      active ? 'bg-gray-100 border-gray-400' : 'hover:bg-gray-50 bg-white'
+                    }`}
+                    onClick={() => setActiveFolderId(f.id)}
+                    type="button"
+                    title="クリックで選択"
+                  >
+                    <div className="font-semibold truncate">📁 {f.name || 'フォルダ'}</div>
+                    <div className="text-[11px] text-gray-500 truncate">plates: {(f.files ?? []).length}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="rounded border p-2 space-y-2 bg-white">
+              <div className="text-[11px] text-gray-600 font-semibold">新規フォルダ</div>
+              <input
+                className="w-full rounded border px-2 py-1 text-sm bg-white"
+                placeholder="フォルダ名"
+                value={newFolderName}
+                onChange={(e) => setNewFolderName(e.target.value)}
+              />
+              <button
+                className="w-full rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
+                type="button"
+                onClick={() => {
+                  const nm = (newFolderName || '新規フォルダ').trim();
+                  const next = createPlateFolder(fs, nm);
+                  commit(next);
+                  setNewFolderName('');
+                  setActiveFolderId(next.folders?.[0]?.id ?? null);
+                }}
+              >
+                フォルダ作成
+              </button>
+            </div>
+
+            {activeFolder ? (
+              <div className="flex gap-2">
+                <button
+                  className="flex-1 rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
+                  type="button"
+                  onClick={() => {
+                    const nm = window.prompt('フォルダ名を入力', activeFolder.name || '');
+                    if (nm == null) return;
+                    const next = renamePlateFolder(fs, activeFolder.id, nm.trim() || activeFolder.name);
+                    commit(next);
+                  }}
+                >
+                  名前変更
+                </button>
+                <button
+                  className="flex-1 rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
+                  type="button"
+                  onClick={() => {
+                    if (!confirm('このフォルダを削除しますか？（中の切板も消えます）')) return;
+                    const next = deletePlateFolder(fs, activeFolder.id);
+                    commit(next);
+                    setActiveFolderId(next.folders?.[0]?.id ?? null);
+                  }}
+                >
+                  削除
+                </button>
+              </div>
+            ) : null}
+          </div>
+
+          {/* 右：切板ファイル */}
+          <div className="p-3 space-y-3 bg-white">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <div className="text-xs font-semibold text-gray-600">切板ファイル（{activeFolder?.name || ''}）</div>
+                <div className="text-[11px] text-gray-500">※ ブラウザ保存（localStorage / 切板専用）</div>
+              </div>
+
+              <div className="flex items-end gap-2">
+                <div>
+                  <div className="text-[11px] text-gray-500 mb-1">挿入方法</div>
+                  <select
+                    className="rounded border px-2 py-1 text-sm bg-white"
+                    value={insertMode}
+                    onChange={(e) => setInsertMode(e.target.value)}
+                  >
+                    <option value="replace">上書き（今のスケッチを置換）</option>
+                    <option value="append">追加（今のスケッチに足す）</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded border overflow-hidden bg-white">
+              <div className="grid grid-cols-[1fr_160px_240px] bg-gray-50 border-b px-3 py-2 text-xs font-semibold text-gray-600">
+                <div>名前</div>
+                <div>更新</div>
+                <div className="text-right">操作</div>
+              </div>
+
+              <div className="max-h-[320px] overflow-auto">
+                {files.length === 0 ? (
+                  <div className="p-3 text-sm text-gray-500">このフォルダには切板がありません</div>
+                ) : (
+                  files.map((f) => (
+                    <div
+                      key={f.id}
+                      className="grid grid-cols-[1fr_160px_240px] items-center px-3 py-2 border-b last:border-b-0 bg-white"
+                    >
+                      <div className="truncate text-sm font-semibold">{f.name || 'plate'}</div>
+                      <div className="text-xs text-gray-500">{fmt(f.savedAt)}</div>
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          className="rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
+                          type="button"
+                          onClick={() => {
+                            onPickPlate?.(f.payload, { insertMode });
+                            onClose?.();
+                          }}
+                        >
+                          挿入
+                        </button>
+
+                        <button
+                          className="rounded border px-2 py-1 text-sm hover:bg-gray-50 bg-white"
+                          type="button"
+                          onClick={() => {
+                            if (!activeFolder) return;
+                            if (!confirm(`「${f.name}」を削除しますか？`)) return;
+                            const next = deletePlateFile(fs, activeFolder.id, f.id);
+                            commit(next);
+                          }}
+                        >
+                          削除
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            <div className="text-[11px] text-gray-500">
+              ※ エディタ側で「2D作図」を開始し、面選択が終わってから挿入してください（面が未選択だと貼れません）
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t px-4 py-3 text-[11px] text-gray-500 bg-white">
+          切板は切板専用の保存領域です（エディタの保存とは別）。
+        </div>
+      </div>
+    </div>
+  );
+}

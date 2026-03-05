@@ -675,7 +675,8 @@ function MeshBody({
     obj.type === 'steel-squarepipe' ||
     obj.type === 'steel-expanded' ||
     obj.type === 'steel-checkered' ||
-    obj.type === 'sketch-extrude'
+    obj.type === 'sketch-extrude' ||
+    obj.type === 'plate'
   ) {
     const geo = buildGeometryFromShape(obj);
     return (

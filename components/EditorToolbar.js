@@ -41,27 +41,34 @@ export default function EditorToolbar({
 
   onOpenSteelPanel,
 
-  // ✅ 追加：2D作図 / 立体化
   onStartSketch2D,
   onStartExtrude,
+
+  // ✅ 追加：切板挿入
+  onOpenPlateInsert,
 }) {
   const [openFile, setOpenFile] = useState(false);
   const [openView, setOpenView] = useState(false);
   const [openDup, setOpenDup] = useState(false);
 
+  // ✅ ツールメニュー
+  const [openTools, setOpenTools] = useState(false);
+
   const fileWrapRef = useRef(null);
   const viewWrapRef = useRef(null);
   const dupWrapRef = useRef(null);
+  const toolsWrapRef = useRef(null);
 
   useEffect(() => {
     const onDown = (e) => {
       if (openFile && fileWrapRef.current && !fileWrapRef.current.contains(e.target)) setOpenFile(false);
       if (openView && viewWrapRef.current && !viewWrapRef.current.contains(e.target)) setOpenView(false);
       if (openDup && dupWrapRef.current && !dupWrapRef.current.contains(e.target)) setOpenDup(false);
+      if (openTools && toolsWrapRef.current && !toolsWrapRef.current.contains(e.target)) setOpenTools(false);
     };
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
-  }, [openFile, openView, openDup]);
+  }, [openFile, openView, openDup, openTools]);
 
   const Btn = ({ active, onClick, children, title, disabled }) => (
     <button
@@ -96,6 +103,7 @@ export default function EditorToolbar({
               setOpenFile((v) => !v);
               setOpenView(false);
               setOpenDup(false);
+              setOpenTools(false);
             }}
           >
             ファイル ▾
@@ -140,6 +148,7 @@ export default function EditorToolbar({
               setOpenView((v) => !v);
               setOpenFile(false);
               setOpenDup(false);
+              setOpenTools(false);
             }}
           >
             表示 ▾
@@ -200,9 +209,38 @@ export default function EditorToolbar({
         <button className="border px-2 py-1 hover:bg-gray-50" type="button">
           設定
         </button>
-        <button className="border px-2 py-1 hover:bg-gray-50" type="button">
-          ツール
-        </button>
+
+        {/* ✅ ツール（切板挿入） */}
+        <div className="relative" ref={toolsWrapRef}>
+          <button
+            className="border px-2 py-1 hover:bg-gray-50"
+            type="button"
+            onClick={() => {
+              setOpenTools((v) => !v);
+              setOpenFile(false);
+              setOpenView(false);
+              setOpenDup(false);
+            }}
+          >
+            ツール ▾
+          </button>
+
+          {openTools ? (
+            <div className="absolute left-0 top-full z-50 mt-1 w-44 border bg-white shadow">
+              <button
+                className="w-full px-3 py-2 text-left text-xs hover:bg-gray-50"
+                type="button"
+                onClick={() => {
+                  onOpenPlateInsert?.();
+                  setOpenTools(false);
+                }}
+              >
+                切板挿入（0,0に即配置）
+              </button>
+            </div>
+          ) : null}
+        </div>
+
         <button className="border px-2 py-1 hover:bg-gray-50" type="button">
           ヘルプ
         </button>
@@ -228,6 +266,7 @@ export default function EditorToolbar({
               setOpenDup((v) => !v);
               setOpenFile(false);
               setOpenView(false);
+              setOpenTools(false);
             }}
             title="複製（平行 / 回転 / ミラー）"
           >

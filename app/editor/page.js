@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import { SketchToolPanel, ExtrudePanel } from '@/components/sketch2d/SketchPanels';
 import { detectClosedLoops } from '@/components/sketch2d/SketchOverlay';
 import FileManagerModal from '@/components/file/FileManagerModal';
+import PlateInsertModal from '@/components/plate/PlateInsertModal';
 import { sanitizeObjectsForSave } from '@/components/file/fsStorage';
 
 // ✅ sections.js の形状生成（EditorCanvas と一致させる）
@@ -47,6 +48,34 @@ function degToRad(deg) {
   return (deg * Math.PI) / 180;
 }
 
+function buildSketchEntitiesFromPlateProfile(profile) {
+  const pts = profile?.points ?? [];
+  const closed = !!profile?.closed;
+  if (pts.length < 2) return [];
+
+  const norm = pts.map((p) => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 }));
+
+  const mkId = () => `ent_${Date.now()}_${Math.floor(Math.random() * 1e9)}`;
+
+  const entities = [];
+  for (let i = 0; i < norm.length - 1; i++) {
+    entities.push({
+      id: mkId(),
+      type: 'line',
+      a: { x: norm[i].x, y: norm[i].y },
+      b: { x: norm[i + 1].x, y: norm[i + 1].y },
+    });
+  }
+  if (closed && norm.length >= 3) {
+    entities.push({
+      id: mkId(),
+      type: 'line',
+      a: { x: norm[norm.length - 1].x, y: norm[norm.length - 1].y },
+      b: { x: norm[0].x, y: norm[0].y },
+    });
+  }
+  return entities;
+}
 // ✅ 生成時のデフォルト原点：正面左下（角）
 // （円柱/円錐は底面中心）
 function defaultPivotFor(type, data) {
@@ -700,6 +729,7 @@ export default function EditorPage() {
   const [currentTool, setCurrentTool] = useState('select');
   const [selectMode, setSelectMode] = useState('body');
 const [fileModal, setFileModal] = useState({ open: false, mode: 'save' }); // 'save' | 'open'
+const [plateInsertModal, setPlateInsertModal] = useState({ open: false });
 
   // ✅ 頂点移動：1点目(頂点/中点)の記憶
   const [snapMovePick, setSnapMovePick] = useState(null);
@@ -1017,6 +1047,11 @@ const [fileModal, setFileModal] = useState({ open: false, mode: 'save' }); // 's
      ensureRightOpen?.();
      setFileModal({ open: true, mode: 'open' });
    }
+
+function openPlateInsert() {
+  ensureRightOpen?.();
+  setPlateInsertModal({ open: true });
+}
 
    function getCurrentPayloadForSave() {
      const safeObjects = sanitizeObjectsForSave(objects);
@@ -1980,7 +2015,83 @@ const [fileModal, setFileModal] = useState({ open: false, mode: 'save' }); // 's
         getCurrentPayload={getCurrentPayloadForSave}
         onOpenPayload={applyOpenedPayload}
       />
-      <div className="shrink-0 sticky top-0 z-40 bg-white border-b">
+
+<PlateInsertModal
+  open={plateInsertModal.open}
+  onClose={() => setPlateInsertModal({ open: false })}
+  // PlateInsertModal の onPickPlate を差し替え
+onPickPlate={(payload, options) => {
+  const plate = payload?.plate ?? payload ?? null;
+  const profile = plate?.profile ?? payload?.profile ?? null;
+  const pts = profile?.points ?? [];
+
+  if (!pts.length) {
+    alert('この切板データに輪郭(profile)が見つかりません。');
+    return;
+  }
+
+  // 厚み：データにあれば拾う。無ければ 12mm デフォ
+  const t = Number(plate?.t ?? plate?.thickness ?? profile?.t ?? 12) || 12;
+
+  // points -> Shape
+  const norm = pts.map((p) => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 }));
+  if (norm.length < 3) {
+    alert('切板の輪郭点が不足しています。');
+    return;
+  }
+
+  const first = norm[0];
+  const last = norm[norm.length - 1];
+  const isClosed =
+    !!profile?.closed || (first.x === last.x && first.y === last.y);
+
+  const shape = new THREE.Shape();
+  shape.moveTo(first.x, first.y);
+  for (let i = 1; i < norm.length; i++) shape.lineTo(norm[i].x, norm[i].y);
+  if (!isClosed) shape.lineTo(first.x, first.y);
+
+  // Shape -> ExtrudeGeometry（厚み）
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(0.1, t),
+    bevelEnabled: false,
+    steps: 1,
+    curveSegments: 16,
+  });
+
+  // profile が XY で来る前提：
+  // Extrude は +Z 方向に厚みが出るので、厚みを Y にしたいなら回す
+  geo.rotateX(-Math.PI / 2);
+
+  geo.computeBoundingBox();
+  geo.computeVertexNormals();
+
+  // bbox から size/pivot を作る（鋼材追加と同じ “外形箱” 用）
+  const bb = geo.boundingBox;
+  const sx = Math.max(1, (bb?.max.x ?? 0) - (bb?.min.x ?? 0));
+  const sy = Math.max(1, (bb?.max.y ?? 0) - (bb?.min.y ?? 0));
+  const sz = Math.max(1, (bb?.max.z ?? 0) - (bb?.min.z ?? 0));
+
+  // 「0,0に即配置」＝ 左下角が原点に来るように pivot を min 側に寄せる
+  const pivot = [-(bb?.min.x ?? 0), -(bb?.min.y ?? 0), -(bb?.min.z ?? 0)];
+
+  add('plate', {
+    name: plate?.name ?? 'plate',
+    __geometry: geo,          // ✅ EditorCanvas が最優先で描く
+    size: [sx, sy, sz],       // ✅ pivot/UI 用（inspectorなど）
+    pivot,
+    position: [0, 0, 0],
+    rotation: [0, 0, 0],
+    color: '#bfbfbf',
+
+    // 保存/再生成用に生データも持っておく（任意）
+    profile: { points: norm, closed: !!profile?.closed },
+    dims: { t },
+  });
+
+  setPlateInsertModal({ open: false });
+}}
+/>     
+ <div className="shrink-0 sticky top-0 z-40 bg-white border-b">
         <EditorToolbar
           currentTool={currentTool}
           setTool={(t) => {
@@ -2020,6 +2131,7 @@ const [fileModal, setFileModal] = useState({ open: false, mode: 'save' }); // 's
           onToggleGrid={() => setShowGrid((v) => !v)}
           onStartSketch2D={startSketch2D}
           onStartExtrude={startExtrude}
+	  onOpenPlateInsert={openPlateInsert}
         />
       </div>
 
