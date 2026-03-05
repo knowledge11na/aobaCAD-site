@@ -1,0 +1,173 @@
+warning: in the working copy of 'app/page.js', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/app/editor/page.js b/app/editor/page.js[m
+[1mindex 99026ab..1e584bc 100644[m
+[1m--- a/app/editor/page.js[m
+[1m+++ b/app/editor/page.js[m
+[36m@@ -8,6 +8,8 @@[m [mimport { fetchSteelCatalog } from '@/components/steel/steelCatalog';[m
+ import * as THREE from 'three';[m
+ import { SketchToolPanel, ExtrudePanel } from '@/components/sketch2d/SketchPanels';[m
+ import { detectClosedLoops } from '@/components/sketch2d/SketchOverlay';[m
+[32m+[m[32mimport FileManagerModal from '@/components/file/FileManagerModal';[m
+[32m+[m[32mimport { sanitizeObjectsForSave } from '@/components/file/fsStorage';[m
+ [m
+ // ✅ sections.js の形状生成（EditorCanvas と一致させる）[m
+ import {[m
+[36m@@ -697,6 +699,7 @@[m [mfunction InspectorPanel({ obj, onChange }) {[m
+ export default function EditorPage() {[m
+   const [currentTool, setCurrentTool] = useState('select');[m
+   const [selectMode, setSelectMode] = useState('body');[m
+[32m+[m[32mconst [fileModal, setFileModal] = useState({ open: false, mode: 'save' }); // 'save' | 'open'[m
+ [m
+   // ✅ 頂点移動：1点目(頂点/中点)の記憶[m
+   const [snapMovePick, setSnapMovePick] = useState(null);[m
+[36m@@ -848,8 +851,6 @@[m [mexport default function EditorPage() {[m
+         return { ...o, position: [b[0] + delta.x, b[1] + delta.y, b[2] + delta.z] };[m
+       })[m
+     );[m
+[31m-[m
+[31m-    setMoveDelta({ x: String(delta.x), y: String(delta.y), z: String(delta.z) });[m
+   }[m
+ [m
+   // ===== 回転（軸＋角度） =====[m
+[36m@@ -1007,6 +1008,41 @@[m [mexport default function EditorPage() {[m
+     setPrimaryId((pid) => (pid && exist.has(pid) ? pid : null));[m
+   }[m
+ [m
+[32m+[m[32m   function openFileSave() {[m
+[32m+[m[32m     ensureRightOpen?.();[m
+[32m+[m[32m     setFileModal({ open: true, mode: 'save' });[m
+[32m+[m[32m   }[m
+[32m+[m
+[32m+[m[32m   function openFileOpen() {[m
+[32m+[m[32m     ensureRightOpen?.();[m
+[32m+[m[32m     setFileModal({ open: true, mode: 'open' });[m
+[32m+[m[32m   }[m
+[32m+[m
+[32m+[m[32m   function getCurrentPayloadForSave() {[m
+[32m+[m[32m     const safeObjects = sanitizeObjectsForSave(objects);[m
+[32m+[m[32m     return { objects: safeObjects };[m
+[32m+[m[32m   }[m
+[32m+[m
+[32m+[m[32m   function applyOpenedPayload(payload) {[m
+[32m+[m[32m     const nextObjects = payload?.objects ?? [];[m
+[32m+[m[32m     // 履歴もリセット（開いた瞬間が初期状態）[m
+[32m+[m[32m     setObjects(nextObjects);[m
+[32m+[m[32m     historyRef.current = [nextObjects];[m
+[32m+[m[32m     futureRef.current = [];[m
+[32m+[m
+[32m+[m[32m     // 選択は先頭shapeに寄せる（無ければ解除）[m
+[32m+[m[32m     const firstShape = (nextObjects ?? []).find((o) => o.type !== 'group') ?? null;[m
+[32m+[m[32m     if (firstShape?.id) {[m
+[32m+[m[32m       setSelectedIds([firstShape.id]);[m
+[32m+[m[32m       setPrimaryId(firstShape.id);[m
+[32m+[m[32m     } else {[m
+[32m+[m[32m       setSelectedIds([]);[m
+[32m+[m[32m       setPrimaryId(null);[m
+[32m+[m[32m     }[m
+[32m+[m[32m     setCurrentTool('select');[m
+[32m+[m[32m     setSelectMode('body');[m
+[32m+[m[32m   }[m
+[32m+[m
+   function nextNameForType(type) {[m
+     const count = shapes.filter((o) => o.type === type).length + 1;[m
+     return `${type}${count}`;[m
+[36m@@ -1935,8 +1971,15 @@[m [mexport default function EditorPage() {[m
+     setCurrentTool('select');[m
+   }[m
+ [m
+[31m-  return ([m
+[31m-    <div className="h-screen flex flex-col min-h-0">[m
+[32m+[m[32m   return ([m
+[32m+[m[32m     <div className="h-screen flex flex-col min-h-0">[m
+[32m+[m[32m      <FileManagerModal[m
+[32m+[m[32m        open={fileModal.open}[m
+[32m+[m[32m        mode={fileModal.mode}[m
+[32m+[m[32m        onClose={() => setFileModal((p) => ({ ...p, open: false }))}[m
+[32m+[m[32m        getCurrentPayload={getCurrentPayloadForSave}[m
+[32m+[m[32m        onOpenPayload={applyOpenedPayload}[m
+[32m+[m[32m      />[m
+       <div className="shrink-0 sticky top-0 z-40 bg-white border-b">[m
+         <EditorToolbar[m
+           currentTool={currentTool}[m
+[36m@@ -1949,6 +1992,8 @@[m [mexport default function EditorPage() {[m
+             if (t !== 'vertex-move') setSnapMovePick(null);[m
+ [m
+           }}[m
+[32m+[m	[32m onFileSave={openFileSave}[m
+[32m+[m[32m         onFileOpen={openFileOpen}[m
+           selectMode={selectMode}[m
+           setSelectMode={setSelectMode}[m
+           onAddCube={() => openAdd('cube')}[m
+[1mdiff --git a/app/page.js b/app/page.js[m
+[1mindex 4539fdf..9a0e3c9 100644[m
+[1m--- a/app/page.js[m
+[1m+++ b/app/page.js[m
+[36m@@ -7,10 +7,10 @@[m [mexport default function HomePage() {[m
+       <h1 className="text-2xl font-bold">3DCADサイト（初期セットアップ）</h1>[m
+ [m
+       <p className="text-sm text-gray-600">[m
+[31m-        まずは「3D表示」「鋼材テンプレ（仮）」「材質（仮）」「材料取り」の入口を用意しました。[m
+[32m+[m[32m        まずは「3D表示」「鋼材テンプレ（仮）」「材質（仮）」「材料取り」「切板製作」の入口を用意しました。[m
+       </p>[m
+ [m
+[31m-      <div className="grid gap-3 sm:grid-cols-4">[m
+[32m+[m[32m      <div className="grid gap-3 sm:grid-cols-5">[m
+         <Link className="rounded-xl border p-4 hover:bg-gray-50" href="/editor">[m
+           <div className="font-semibold">3Dエディタ</div>[m
+           <div className="text-sm text-gray-600">まずは3D表示・操作</div>[m
+[36m@@ -30,6 +30,11 @@[m [mexport default function HomePage() {[m
+           <div className="font-semibold">材料取り</div>[m
+           <div className="text-sm text-gray-600">定尺から最適な切断表を作成</div>[m
+         </Link>[m
+[32m+[m
+[32m+[m[32m        <Link className="rounded-xl border p-4 hover:bg-gray-50" href="/plate">[m
+[32m+[m[32m          <div className="font-semibold">切板製作</div>[m
+[32m+[m[32m          <div className="text-sm text-gray-600">2D作図 → 板厚で3D化</div>[m
+[32m+[m[32m        </Link>[m
+       </div>[m
+ [m
+       <div className="rounded-xl bg-gray-50 p-4 text-sm">[m
+[36m@@ -38,9 +43,10 @@[m [mexport default function HomePage() {[m
+           <li>鋼材テンプレ保存を IndexedDB（ブラウザ保存）に変更</li>[m
+           <li>材質の単位重量 → 重さ計算（穴/切欠き考慮あり/なし）</li>[m
+           <li>3D上で立方体/直方体/円柱/円錐テンプレ作成 → 編集</li>[m
+[32m+[m[32m          <li>切板製作：2Dの押し出し形状を保存・呼び出し（将来）</li>[m
+           <li>材料取り：鋼材テンプレと連動（将来）</li>[m
+         </ul>[m
+       </div>[m
+     </div>[m
+   );[m
+[31m-}[m
+[32m+[m[32m}[m
+\ No newline at end of file[m
+[1mdiff --git a/components/EditorToolbar.js b/components/EditorToolbar.js[m
+[1mindex e6fe2f0..fec8209 100644[m
+[1m--- a/components/EditorToolbar.js[m
+[1m+++ b/components/EditorToolbar.js[m
+[36m@@ -9,6 +9,10 @@[m [mexport default function EditorToolbar({[m
+   selectMode,[m
+   setSelectMode,[m
+ [m
+[32m+[m[32m  // ✅ file[m
+[32m+[m[32m  onFileSave,[m
+[32m+[m[32m  onFileOpen,[m
+[32m+[m
+   onAddCube,[m
+   onAddBox,[m
+   onAddCylinder,[m
+[36m@@ -41,24 +45,23 @@[m [mexport default function EditorToolbar({[m
+   onStartSketch2D,[m
+   onStartExtrude,[m
+ }) {[m
+[32m+[m[32m  const [openFile, setOpenFile] = useState(false);[m
+   const [openView, setOpenView] = useState(false);[m
+   const [openDup, setOpenDup] = useState(false);[m
+ [m
+[32m+[m[32m  const fileWrapRef = useRef(null);[m
+   const viewWrapRef = useRef(null);[m
+   const dupWrapRef = useRef(null);[m
+ [m
+   useEffect(() => {[m
+     const onDown = (e) => {[m
+[31m-      if (openView && viewWrapRef.current && !viewWrapRef.current.contains(e.target)) {[m
+[31m-    

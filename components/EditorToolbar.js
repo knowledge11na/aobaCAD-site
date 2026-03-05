@@ -9,6 +9,10 @@ export default function EditorToolbar({
   selectMode,
   setSelectMode,
 
+  // ✅ file
+  onFileSave,
+  onFileOpen,
+
   onAddCube,
   onAddBox,
   onAddCylinder,
@@ -41,24 +45,23 @@ export default function EditorToolbar({
   onStartSketch2D,
   onStartExtrude,
 }) {
+  const [openFile, setOpenFile] = useState(false);
   const [openView, setOpenView] = useState(false);
   const [openDup, setOpenDup] = useState(false);
 
+  const fileWrapRef = useRef(null);
   const viewWrapRef = useRef(null);
   const dupWrapRef = useRef(null);
 
   useEffect(() => {
     const onDown = (e) => {
-      if (openView && viewWrapRef.current && !viewWrapRef.current.contains(e.target)) {
-        setOpenView(false);
-      }
-      if (openDup && dupWrapRef.current && !dupWrapRef.current.contains(e.target)) {
-        setOpenDup(false);
-      }
+      if (openFile && fileWrapRef.current && !fileWrapRef.current.contains(e.target)) setOpenFile(false);
+      if (openView && viewWrapRef.current && !viewWrapRef.current.contains(e.target)) setOpenView(false);
+      if (openDup && dupWrapRef.current && !dupWrapRef.current.contains(e.target)) setOpenDup(false);
     };
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
-  }, [openView, openDup]);
+  }, [openFile, openView, openDup]);
 
   const Btn = ({ active, onClick, children, title, disabled }) => (
     <button
@@ -84,15 +87,61 @@ export default function EditorToolbar({
   return (
     <div className="w-full border-b bg-white">
       <div className="flex items-center gap-2 px-2 py-1 text-xs">
-        <button className="border px-2 py-1 hover:bg-gray-50" type="button">
-          ファイル
-        </button>
+        {/* ✅ ファイル */}
+        <div className="relative" ref={fileWrapRef}>
+          <button
+            className="border px-2 py-1 hover:bg-gray-50"
+            type="button"
+            onClick={() => {
+              setOpenFile((v) => !v);
+              setOpenView(false);
+              setOpenDup(false);
+            }}
+          >
+            ファイル ▾
+          </button>
+
+          {openFile ? (
+            <div className="absolute left-0 top-full z-50 mt-1 w-40 border bg-white shadow">
+              <button
+                className="w-full px-3 py-2 text-left text-xs hover:bg-gray-50"
+                type="button"
+                onClick={() => {
+                  onFileSave?.();
+                  setOpenFile(false);
+                }}
+              >
+                保存
+              </button>
+              <button
+                className="w-full px-3 py-2 text-left text-xs hover:bg-gray-50"
+                type="button"
+                onClick={() => {
+                  onFileOpen?.();
+                  setOpenFile(false);
+                }}
+              >
+                開く
+              </button>
+            </div>
+          ) : null}
+        </div>
+
         <button className="border px-2 py-1 hover:bg-gray-50" type="button">
           編集
         </button>
 
+        {/* ✅ 表示 */}
         <div className="relative" ref={viewWrapRef}>
-          <button className="border px-2 py-1 hover:bg-gray-50" type="button" onClick={() => setOpenView((v) => !v)}>
+          <button
+            className="border px-2 py-1 hover:bg-gray-50"
+            type="button"
+            onClick={() => {
+              setOpenView((v) => !v);
+              setOpenFile(false);
+              setOpenDup(false);
+            }}
+          >
             表示 ▾
           </button>
 
@@ -121,7 +170,11 @@ export default function EditorToolbar({
 
               <div className="my-1 border-t" />
 
-              <button className="w-full px-3 py-2 text-left text-xs hover:bg-gray-50" type="button" onClick={() => onToggleShadows?.()}>
+              <button
+                className="w-full px-3 py-2 text-left text-xs hover:bg-gray-50"
+                type="button"
+                onClick={() => onToggleShadows?.()}
+              >
                 {showShadows ? '☑' : '☐'} 影（Shadow）
               </button>
               <button className="w-full px-3 py-2 text-left text-xs hover:bg-gray-50" type="button" onClick={() => onToggleGrid?.()}>
@@ -169,7 +222,15 @@ export default function EditorToolbar({
         </Btn>
 
         <div className="relative" ref={dupWrapRef}>
-          <Btn active={isDupTool} onClick={() => setOpenDup((v) => !v)} title="複製（平行 / 回転 / ミラー）">
+          <Btn
+            active={isDupTool}
+            onClick={() => {
+              setOpenDup((v) => !v);
+              setOpenFile(false);
+              setOpenView(false);
+            }}
+            title="複製（平行 / 回転 / ミラー）"
+          >
             複製 ▾
           </Btn>
 
@@ -232,7 +293,6 @@ export default function EditorToolbar({
 
         <span className="mx-1 text-xs text-gray-500">|</span>
 
-        {/* ✅ モード切替時に必ず select へ戻す */}
         <Btn
           active={selectMode === 'body'}
           onClick={() => {
@@ -254,24 +314,17 @@ export default function EditorToolbar({
           頂点モード
         </Btn>
 
-        <Btn
-          active={currentTool === 'vertex-move'}
-          onClick={() => {
-            setTool('vertex-move');
-          }}
-          title="頂点(1点目)→別立体の頂点/中点(2点目) をクリックすると1点目の立体が移動してくっつく"
-        >
+        <Btn active={currentTool === 'vertex-move'} onClick={() => setTool('vertex-move')} title="頂点移動">
           頂点移動
         </Btn>
 
         <span className="mx-1 text-xs text-gray-500">|</span>
 
-        {/* ✅ 追加：2D作図 / 立体化（ボタン実装は他と同じ Btn を使うだけ） */}
         <Btn
           active={currentTool === 'sketch2d'}
           onClick={() => {
-            setTool('sketch2d'); // Canvas側が currentTool を見て「面ピック→作図」を開始
-            onStartSketch2D?.(); // page.js 側で sketchMode 初期化したい場合用（なくてもOKなら空でも動く）
+            setTool('sketch2d');
+            onStartSketch2D?.();
           }}
           title="面をクリックして2D作図を開始"
         >
@@ -281,7 +334,7 @@ export default function EditorToolbar({
         <Btn
           active={currentTool === 'extrude'}
           onClick={() => {
-            setTool('extrude'); // Canvas側が currentTool を見て「面ピック→閉ループ選択→押し出し」に入る
+            setTool('extrude');
             onStartExtrude?.();
           }}
           title="面をクリック→閉じた輪郭を選んで押し出し"

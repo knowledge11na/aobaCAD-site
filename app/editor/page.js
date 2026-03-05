@@ -8,6 +8,8 @@ import { fetchSteelCatalog } from '@/components/steel/steelCatalog';
 import * as THREE from 'three';
 import { SketchToolPanel, ExtrudePanel } from '@/components/sketch2d/SketchPanels';
 import { detectClosedLoops } from '@/components/sketch2d/SketchOverlay';
+import FileManagerModal from '@/components/file/FileManagerModal';
+import { sanitizeObjectsForSave } from '@/components/file/fsStorage';
 
 // ✅ sections.js の形状生成（EditorCanvas と一致させる）
 import {
@@ -697,6 +699,7 @@ function InspectorPanel({ obj, onChange }) {
 export default function EditorPage() {
   const [currentTool, setCurrentTool] = useState('select');
   const [selectMode, setSelectMode] = useState('body');
+const [fileModal, setFileModal] = useState({ open: false, mode: 'save' }); // 'save' | 'open'
 
   // ✅ 頂点移動：1点目(頂点/中点)の記憶
   const [snapMovePick, setSnapMovePick] = useState(null);
@@ -848,8 +851,6 @@ export default function EditorPage() {
         return { ...o, position: [b[0] + delta.x, b[1] + delta.y, b[2] + delta.z] };
       })
     );
-
-    setMoveDelta({ x: String(delta.x), y: String(delta.y), z: String(delta.z) });
   }
 
   // ===== 回転（軸＋角度） =====
@@ -1006,6 +1007,41 @@ export default function EditorPage() {
     setSelectedIds((ids) => ids.filter((id) => exist.has(id)));
     setPrimaryId((pid) => (pid && exist.has(pid) ? pid : null));
   }
+
+   function openFileSave() {
+     ensureRightOpen?.();
+     setFileModal({ open: true, mode: 'save' });
+   }
+
+   function openFileOpen() {
+     ensureRightOpen?.();
+     setFileModal({ open: true, mode: 'open' });
+   }
+
+   function getCurrentPayloadForSave() {
+     const safeObjects = sanitizeObjectsForSave(objects);
+     return { objects: safeObjects };
+   }
+
+   function applyOpenedPayload(payload) {
+     const nextObjects = payload?.objects ?? [];
+     // 履歴もリセット（開いた瞬間が初期状態）
+     setObjects(nextObjects);
+     historyRef.current = [nextObjects];
+     futureRef.current = [];
+
+     // 選択は先頭shapeに寄せる（無ければ解除）
+     const firstShape = (nextObjects ?? []).find((o) => o.type !== 'group') ?? null;
+     if (firstShape?.id) {
+       setSelectedIds([firstShape.id]);
+       setPrimaryId(firstShape.id);
+     } else {
+       setSelectedIds([]);
+       setPrimaryId(null);
+     }
+     setCurrentTool('select');
+     setSelectMode('body');
+   }
 
   function nextNameForType(type) {
     const count = shapes.filter((o) => o.type === type).length + 1;
@@ -1935,8 +1971,15 @@ export default function EditorPage() {
     setCurrentTool('select');
   }
 
-  return (
-    <div className="h-screen flex flex-col min-h-0">
+   return (
+     <div className="h-screen flex flex-col min-h-0">
+      <FileManagerModal
+        open={fileModal.open}
+        mode={fileModal.mode}
+        onClose={() => setFileModal((p) => ({ ...p, open: false }))}
+        getCurrentPayload={getCurrentPayloadForSave}
+        onOpenPayload={applyOpenedPayload}
+      />
       <div className="shrink-0 sticky top-0 z-40 bg-white border-b">
         <EditorToolbar
           currentTool={currentTool}
@@ -1949,6 +1992,8 @@ export default function EditorPage() {
             if (t !== 'vertex-move') setSnapMovePick(null);
 
           }}
+	 onFileSave={openFileSave}
+         onFileOpen={openFileOpen}
           selectMode={selectMode}
           setSelectMode={setSelectMode}
           onAddCube={() => openAdd('cube')}
