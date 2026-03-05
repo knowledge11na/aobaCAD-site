@@ -11,6 +11,8 @@ import {
   overwriteFile,
   renameFolder,
   saveFS,
+loadFSFromServer,
+  saveFSToServer,
 } from './fsStorage';
 
 function fmt(ts) {
@@ -370,6 +372,40 @@ export default function FileManagerModal({
               >
                 （危険）全消去
               </button>
+<button
+  className="rounded border px-3 py-2 text-sm hover:bg-gray-50 bg-white"
+  type="button"
+  onClick={async () => {
+    try {
+      await saveFSToServer(fs);
+      alert('サーバへ同期しました');
+    } catch (e) {
+      alert(`サーバ同期失敗: ${String(e?.message ?? e)}`);
+    }
+  }}
+>
+  サーバへ同期（保存）
+</button>
+
+<button
+  className="rounded border px-3 py-2 text-sm hover:bg-gray-50 bg-white"
+  type="button"
+  onClick={async () => {
+    try {
+      const remote = await loadFSFromServer();
+      // ローカルも更新（スマホでも「次回オフライン」で見れる）
+      setFS(remote);
+      saveFS(remote);
+      setActiveFolderId(remote?.folders?.[0]?.id ?? null);
+      alert('サーバから同期しました');
+    } catch (e) {
+      alert(`サーバ読込失敗: ${String(e?.message ?? e)}`);
+    }
+  }}
+>
+  サーバから同期（読込）
+</button>
+
             </div>
           </div>
         </div>

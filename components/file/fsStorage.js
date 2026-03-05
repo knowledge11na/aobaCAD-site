@@ -130,3 +130,21 @@ export function deleteFile(fs, folderId, fileId) {
   f.files = (f.files ?? []).filter((x) => x.id !== fileId);
   return next;
 }
+
+export async function loadFSFromServer() {
+  const res = await fetch('/api/cadfs', { method: 'GET', cache: 'no-store' });
+  const j = await res.json().catch(() => null);
+  if (!res.ok || !j?.ok) throw new Error(j?.reason || 'server load failed');
+  return j.data ?? { folders: [] };
+}
+
+export async function saveFSToServer(next) {
+  const res = await fetch('/api/cadfs', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ data: next }),
+  });
+  const j = await res.json().catch(() => null);
+  if (!res.ok || !j?.ok) throw new Error(j?.reason || 'server save failed');
+  return true;
+}
