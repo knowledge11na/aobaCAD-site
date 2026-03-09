@@ -1,170 +1,105 @@
 // file: components/plate/PlatePreview3D.js
 'use client';
 
-import { useEffect, useMemo, useRef } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { OrbitControls, Grid } from '@react-three/drei';
+import { useMemo } from 'react';
+import * as THREE from 'three';
 
-function clamp(n, min, max) {
-  return Math.max(min, Math.min(max, n));
+function makeShapeFromProfile(outer, holes) {
+  if (!Array.isArray(outer) || outer.length < 3) return null;
+
+  const shape = new THREE.Shape();
+  shape.moveTo(outer[0].x, outer[0].y);
+  for (let i = 1; i < outer.length; i++) {
+    shape.lineTo(outer[i].x, outer[i].y);
+  }
+  shape.lineTo(outer[0].x, outer[0].y);
+
+  for (const holePts of holes ?? []) {
+    if (!Array.isArray(holePts) || holePts.length < 3) continue;
+
+    const hole = new THREE.Path();
+    hole.moveTo(holePts[0].x, holePts[0].y);
+    for (let i = 1; i < holePts.length; i++) {
+      hole.lineTo(holePts[i].x, holePts[i].y);
+    }
+    hole.lineTo(holePts[0].x, holePts[0].y);
+
+    shape.holes.push(hole);
+  }
+
+  return shape;
 }
 
-export default function PlatePreview3D({ points = [], closed = false, thickness = 9 }) {
-  const holderRef = useRef(null);
-  const threeRef = useRef({
-    THREE: null,
-    renderer: null,
-    scene: null,
-    camera: null,
-    controls: null,
-    mesh: null,
-    raf: 0,
-    ro: null,
-  });
+function PlateMesh({ outer, holes, thickness }) {
+  const geometry = useMemo(() => {
+    const shape = makeShapeFromProfile(outer, holes);
+    if (!shape) return null;
 
-  const canExtrude = useMemo(() => closed && points && points.length >= 3, [closed, points]);
+    const t = Math.max(0.1, Number(thickness) || 1);
 
-  // THREE init
-  useEffect(() => {
-    let disposed = false;
-
-    async function init() {
-      const holder = holderRef.current;
-      if (!holder) return;
-
-      const THREE = await import('three');
-      const { OrbitControls } = await import('three/examples/jsm/controls/OrbitControls.js');
-      if (disposed) return;
-
-      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-      renderer.setPixelRatio(window.devicePixelRatio || 1);
-      holder.appendChild(renderer.domElement);
-
-      const scene = new THREE.Scene();
-
-      const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100000);
-      camera.position.set(0, -450, 350);
-
-      const controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-
-      // light
-      const light1 = new THREE.DirectionalLight(0xffffff, 1.0);
-      light1.position.set(300, -300, 500);
-      scene.add(light1);
-      scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-
-      // grid
-      const grid = new THREE.GridHelper(800, 20);
-      grid.rotation.x = Math.PI / 2;
-      scene.add(grid);
-
-      // resize
-      const resize = () => {
-        const r = holder.getBoundingClientRect();
-        const w = Math.max(10, Math.floor(r.width));
-        const h = Math.max(10, Math.floor(r.height));
-        renderer.setSize(w, h, false);
-        camera.aspect = w / h;
-        camera.updateProjectionMatrix();
-      };
-
-      const ro = new ResizeObserver(resize);
-      ro.observe(holder);
-      resize();
-
-      const tick = () => {
-        controls.update();
-        renderer.render(scene, camera);
-        threeRef.current.raf = requestAnimationFrame(tick);
-      };
-      tick();
-
-      threeRef.current = { THREE, renderer, scene, camera, controls, mesh: null, raf: threeRef.current.raf, ro };
-    }
-
-    init();
-
-    return () => {
-      disposed = true;
-      const t = threeRef.current;
-      if (t.raf) cancelAnimationFrame(t.raf);
-      if (t.ro) t.ro.disconnect();
-      if (t.scene && t.mesh) {
-        t.scene.remove(t.mesh);
-      }
-      if (t.mesh?.geometry) t.mesh.geometry.dispose();
-      if (t.mesh?.material) t.mesh.material.dispose();
-      if (t.renderer) {
-        const dom = t.renderer.domElement;
-        t.renderer.dispose();
-        if (dom?.parentNode) dom.parentNode.removeChild(dom);
-      }
-      threeRef.current = { THREE: null, renderer: null, scene: null, camera: null, controls: null, mesh: null, raf: 0, ro: null };
-    };
-  }, []);
-
-  // update mesh
-  useEffect(() => {
-    const t = threeRef.current;
-    if (!t.THREE || !t.scene) return;
-    const THREE = t.THREE;
-
-    // remove old
-    if (t.mesh) {
-      t.scene.remove(t.mesh);
-      if (t.mesh.geometry) t.mesh.geometry.dispose();
-      if (t.mesh.material) t.mesh.material.dispose();
-      t.mesh = null;
-    }
-
-    if (!canExtrude) return;
-
-    const depth = clamp(Number(thickness) || 0, 0.1, 2000);
-
-    // points are in canvas coords (px). Convert to 3D coords:
-    // - center around (0,0)
-    // - flip Y (canvas down is +)
-    // We will first compute centroid in canvas coords, then shift.
-    let cx = 0;
-    let cy = 0;
-    for (const p of points) {
-      cx += p.x;
-      cy += p.y;
-    }
-    cx /= points.length;
-    cy /= points.length;
-
-    const shape = new THREE.Shape();
-    const p0 = points[0];
-    shape.moveTo(p0.x - cx, -(p0.y - cy));
-    for (let i = 1; i < points.length; i++) {
-      const p = points[i];
-      shape.lineTo(p.x - cx, -(p.y - cy));
-    }
-    shape.closePath();
-
-    const geom = new THREE.ExtrudeGeometry(shape, {
-      depth,
+    const geo = new THREE.ExtrudeGeometry(shape, {
+      depth: t,
       bevelEnabled: false,
       steps: 1,
+      curveSegments: 32,
     });
 
-    // center Z
-    geom.translate(0, 0, -depth / 2);
+    geo.translate(0, 0, -t / 2);
+    geo.computeVertexNormals();
 
-    const mat = new THREE.MeshStandardMaterial({ metalness: 0.1, roughness: 0.7 });
-    const mesh = new THREE.Mesh(geom, mat);
-    t.scene.add(mesh);
-    t.mesh = mesh;
+    return geo;
+  }, [outer, holes, thickness]);
 
-    if (t.controls) {
-      t.controls.target.set(0, 0, 0);
-      t.controls.update();
-    }
-  }, [points, closed, thickness, canExtrude]);
+  if (!geometry) return null;
 
   return (
-    <div className="rounded-xl border bg-white" style={{ height: 520 }}>
-      <div ref={holderRef} className="h-full w-full" />
+    <mesh geometry={geometry} castShadow receiveShadow rotation={[-Math.PI / 2, 0, 0]}>
+      <meshStandardMaterial color="#bfbfbf" metalness={0.15} roughness={0.7} />
+    </mesh>
+  );
+}
+
+export default function PlatePreview3D({
+  outer = [],
+  holes = [],
+  thickness = 9,
+}) {
+  const canShow = Array.isArray(outer) && outer.length >= 3;
+
+  return (
+    <div className="h-[420px] w-full overflow-hidden rounded-xl border bg-white">
+      <Canvas camera={{ position: [500, 400, 600], fov: 45 }}>
+        <ambientLight intensity={0.9} />
+        <directionalLight position={[400, 700, 500]} intensity={1.1} castShadow />
+
+        <Grid
+          infiniteGrid
+          cellSize={10}
+          sectionSize={100}
+          fadeDistance={5000}
+        />
+
+        {canShow ? (
+          <PlateMesh outer={outer} holes={holes} thickness={thickness} />
+        ) : null}
+
+        <OrbitControls
+          makeDefault
+          enableDamping={false}
+          autoRotate={false}
+          rotateSpeed={0.28}
+          zoomSpeed={0.22}
+          panSpeed={0.22}
+          screenSpacePanning={true}
+          mouseButtons={{
+            LEFT: THREE.MOUSE.ROTATE,
+            MIDDLE: THREE.MOUSE.DOLLY,
+            RIGHT: THREE.MOUSE.PAN,
+          }}
+        />
+      </Canvas>
     </div>
   );
 }

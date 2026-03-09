@@ -2,46 +2,58 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import SketchCanvas2D from '@/components/plate/SketchCanvas2D';
 import PlatePreview3D from '@/components/plate/PlatePreview3D';
 import PlateFileModal from '@/components/plate/PlateFileModal';
 
 export default function PlatePage() {
   const [thickness, setThickness] = useState(9);
-  const [profile, setProfile] = useState({ points: [], closed: false });
+
+  // ✅ 外形1個 + 穴複数
+  const [profile, setProfile] = useState({
+    outer: [],
+    holes: [],
+  });
 
   const [fileModal, setFileModal] = useState({ open: false, mode: 'save' }); // 'save'|'open'
 
   const handleChange = useCallback((data) => {
-    if (data?.profile) setProfile(data.profile);
+    if (data?.profile) {
+      setProfile({
+        outer: Array.isArray(data.profile.outer) ? data.profile.outer : [],
+        holes: Array.isArray(data.profile.holes) ? data.profile.holes : [],
+      });
+    }
   }, []);
 
-  const canExtrude = profile.closed && profile.points.length >= 3;
+  const canExtrude = useMemo(() => {
+    return Array.isArray(profile.outer) && profile.outer.length >= 3;
+  }, [profile]);
 
   function getCurrentPayloadForSave() {
-    // ✅ 切板の保存データ（必要なものだけ）
     return {
       thickness: Number(thickness) || 0,
       profile: {
-        points: profile?.points ?? [],
-        closed: !!profile?.closed,
+        outer: Array.isArray(profile?.outer) ? profile.outer : [],
+        holes: Array.isArray(profile?.holes) ? profile.holes : [],
       },
       meta: {
         savedFrom: 'plate',
-        version: 1,
+        version: 2,
       },
     };
   }
 
   function applyOpenedPayload(payload) {
     const t = Number(payload?.thickness);
-    const p = payload?.profile ?? { points: [], closed: false };
+    const p = payload?.profile ?? { outer: [], holes: [] };
 
     if (Number.isFinite(t)) setThickness(t);
+
     setProfile({
-      points: Array.isArray(p?.points) ? p.points : [],
-      closed: !!p?.closed,
+      outer: Array.isArray(p?.outer) ? p.outer : [],
+      holes: Array.isArray(p?.holes) ? p.holes : [],
     });
   }
 
@@ -50,7 +62,7 @@ export default function PlatePage() {
       <PlateFileModal
         open={fileModal.open}
         mode={fileModal.mode}
-        onClose={() => setFileModal((p) => ({ ...p, open: false }))}
+        onClose={() => setFileModal((prev) => ({ ...prev, open: false }))}
         getCurrentPayload={getCurrentPayloadForSave}
         onOpenPayload={applyOpenedPayload}
       />
@@ -101,26 +113,37 @@ export default function PlatePage() {
             </label>
 
             <div className={`text-xs ${canExtrude ? 'text-green-700' : 'text-gray-500'}`}>
-              {canExtrude ? '3D化OK（輪郭が閉じています）' : '輪郭が閉じていません（「閉じる」してね）'}
+              {canExtrude
+                ? `3D化OK（外形あり / 穴数 ${profile.holes.length}）`
+                : 'まず外形を1つ閉じてください'}
             </div>
           </div>
 
-          <SketchCanvas2D onChange={handleChange} />
+          <SketchCanvas2D
+            outer={profile.outer}
+            holes={profile.holes}
+            onChange={handleChange}
+          />
         </div>
 
         <div className="rounded-xl border p-3 space-y-3">
           <div className="flex items-center justify-between">
             <div className="text-sm font-semibold">3Dプレビュー（押し出し）</div>
             <div className={`text-xs ${canExtrude ? 'text-green-700' : 'text-gray-500'}`}>
-              {canExtrude ? '表示中' : '輪郭が未確定'}
+              {canExtrude ? '表示中' : '外形が未確定'}
             </div>
           </div>
 
-          <PlatePreview3D points={profile.points} closed={profile.closed} thickness={thickness} />
+          <PlatePreview3D
+            outer={profile.outer}
+            holes={profile.holes}
+            thickness={thickness}
+          />
 
           <div className="text-xs text-gray-600">
-            ・マウス：ドラッグ回転 / ホイール拡大縮小 / 右ドラッグ平行移動<br />
-            ・次は「円で穴あけ（内側輪郭）」「線で切欠き」「寸法表示」に進められます
+            ・1個目の閉じた輪郭 = 外形<br />
+            ・2個目以降の閉じた輪郭 = 穴<br />
+            ・四角穴も丸穴も「閉じた輪郭」を追加すればOK
           </div>
         </div>
       </div>

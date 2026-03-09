@@ -812,16 +812,27 @@ export default function EditorCanvas({
 }) {
   const isDup = currentTool === 'dup-translate' || currentTool === 'dup-rotate' || currentTool === 'dup-mirror';
   const isVertexMove = currentTool === 'vertex-move';
-
   const isSketch = currentTool === 'sketch2d' || currentTool === 'extrude';
 
-  const selectable =
-    currentTool === 'select' ||
-    currentTool === 'pan' ||
-    currentTool === 'rotate' ||
-    isDup ||
-    isVertexMove ||
-    isSketch;
+  const isTouchDevice = useMemo(() => {
+    if (typeof window === 'undefined') return false;
+    return (
+      'ontouchstart' in window ||
+      navigator.maxTouchPoints > 0 ||
+      window.matchMedia?.('(pointer: coarse)')?.matches
+    );
+  }, []);
+
+  const mobileViewMode = isTouchDevice;
+
+  const selectable = mobileViewMode
+    ? false
+    : currentTool === 'select' ||
+      currentTool === 'pan' ||
+      currentTool === 'rotate' ||
+      isDup ||
+      isVertexMove ||
+      isSketch;
 
   const drawable = useMemo(() => objects.filter((o) => o.type !== 'group'), [objects]);
 
@@ -1167,10 +1178,10 @@ function isPickedPoint(objId, kind, p) {
         gl.domElement.addEventListener('wheel', onWheel, { passive: false });
         return () => gl.domElement.removeEventListener('wheel', onWheel);
       }}
-      onPointerMissed={() => {
-  if (selectable) onSelect?.(null, null);
-  // ✅ vertex-move の1点目は「空クリックで消さない」(Escapeでのみキャンセル)
-}}
+           onPointerMissed={() => {
+        if (mobileViewMode) return;
+        if (selectable) onSelect?.(null, null);
+      }}
 
     >
       <ambientLight intensity={0.65} />
@@ -1189,10 +1200,6 @@ function isPickedPoint(objId, kind, p) {
         <TransformControls ref={tcPanRef} mode="translate" size={1.0}>
           <group ref={panRef} position={panCenter}>
             <axesHelper args={[600]} />
-            <mesh>
-              <sphereGeometry args={[80, 14, 14]} />
-              <meshBasicMaterial color="#111111" />
-            </mesh>
           </group>
         </TransformControls>
       ) : null}
@@ -1207,7 +1214,7 @@ function isPickedPoint(objId, kind, p) {
 
         const fusedGeo = o.type === 'fused' ? fusedGeometryMap.get(o.id) : null;
 
-        if (singleSelectionForMove && isPrimary && currentTool === 'select' && selectMode === 'body') {
+      if (!mobileViewMode && singleSelectionForMove && isPrimary && currentTool === 'select' && selectMode === 'body') {
           return (
             <TransformControls key={o.id} ref={tcMoveRef} mode={bodyMode} size={0.9}>
               <group ref={groupRef} position={groupPos} rotation={rot}>
@@ -1252,7 +1259,7 @@ function isPickedPoint(objId, kind, p) {
         }
 
         // ✅ ここが重要：vertex-move でも頂点モード表示する
-        if ((currentTool === 'select' || isVertexMove) && selectMode === 'vertex') {
+        if (!mobileViewMode && (currentTool === 'select' || isVertexMove) && selectMode === 'vertex') {
   // ✅ 各オブジェクトのスナップ点を計算して表示（vertex-move のターゲットに使う）
   const sp = computeSnapPoints(o);
 

@@ -25,47 +25,41 @@ export default function SketchCanvas2D({
   width = 700,
   height = 450,
   snapPx = 12,
+  outer = [],
+  holes = [],
   onChange,
 }) {
   const canvasRef = useRef(null);
-
-  // onChange ref（無限ループ対策）
   const onChangeRef = useRef(onChange);
+  const lastLoadedRef = useRef('');
+
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
 
-  // ===== 世界座標(mm)で保持 =====
-  const [points, setPoints] = useState([]); // {x,y} world(mm)
-  const [closed, setClosed] = useState(false);
+  // ✅ 確定済み輪郭
+  const [contours, setContours] = useState([]);
 
-  // ===== 表示変換（world(mm) -> screen(px)） =====
-  // scale: px/mm, pan: screen(px)
-  const [view, setView] = useState(() => ({
-    scale: 1.0, // px per mm（初期は1）
-    panX: width / 2,
-    panY: height / 2,
-  }));
+  // ✅ 今描いている輪郭
+  const [draftPoints, setDraftPoints] = useState([]);
+  const [draftClosed, setDraftClosed] = useState(false);
 
-  // 表示用の線分（world）
-  const lines = useMemo(() => {
-    const segs = [];
-    for (let i = 0; i < points.length - 1; i++) segs.push({ a: points[i], b: points[i + 1] });
-    if (closed && points.length >= 3) segs.push({ a: points[points.length - 1], b: points[0] });
-    return segs;
-  }, [points, closed]);
+  // draft用
+  const [draftStart, setDraftStart] = useState(null);
+  const [draftEnd, setDraftEnd] = useState(null);
+  const [snapHit, setSnapHit] = useState(null);
 
-  // ドラフト（次の1本）
-  const [draftStart, setDraftStart] = useState(null); // world
-  const [draftEnd, setDraftEnd] = useState(null); // world
-  const [snapHit, setSnapHit] = useState(null); // world + type
-
-  // 数値入力（mm / deg）
+  // 数値入力
   const [cmdLength, setCmdLength] = useState('');
   const [cmdAngle, setCmdAngle] = useState('');
   const [lockedByNumbers, setLockedByNumbers] = useState(false);
 
-  // パン操作
+  const [view, setView] = useState(() => ({
+    scale: 1.0,
+    panX: width / 2,
+    panY: height / 2,
+  }));
+
   const panDragRef = useRef({
     active: false,
     startX: 0,
@@ -74,7 +68,39 @@ export default function SketchCanvas2D({
     startPanY: 0,
   });
 
-  // ===== 変換関数 =====
+  function stopPanDrag() {
+    panDragRef.current.active = false;
+  }
+
+  // ✅ 外から開いたデータを反映
+  // 親の onChange で毎回ループしないように、内容が本当に変わった時だけ反映する
+  useEffect(() => {
+    const key = JSON.stringify({
+      outer: Array.isArray(outer) ? outer : [],
+      holes: Array.isArray(holes) ? holes : [],
+    });
+
+    if (lastLoadedRef.current === key) return;
+    lastLoadedRef.current = key;
+
+    const nextContours = [];
+    if (Array.isArray(outer) && outer.length >= 3) {
+      nextContours.push(outer);
+    }
+    if (Array.isArray(holes)) {
+      for (const h of holes) {
+        if (Array.isArray(h) && h.length >= 3) nextContours.push(h);
+      }
+    }
+
+    setContours(nextContours);
+    setDraftPoints([]);
+    setDraftClosed(false);
+    setDraftStart(null);
+    setDraftEnd(null);
+    setSnapHit(null);
+  }, [outer, holes]);
+
   const worldToScreen = (p) => ({
     x: p.x * view.scale + view.panX,
     y: p.y * view.scale + view.panY,
@@ -85,7 +111,6 @@ export default function SketchCanvas2D({
     y: (p.y - view.panY) / view.scale,
   });
 
-  // ★重要：表示ズレ補正（CSS表示→内部座標）
   function getScreenPoint(e) {
     const c = canvasRef.current;
     const r = c.getBoundingClientRect();
@@ -97,26 +122,56 @@ export default function SketchCanvas2D({
     };
   }
 
-  // スナップ点（world）
+  const confirmedLines = useMemo(() => {
+    const segs = [];
+    for (const contour of contours) {
+      if (!Array.isArray(contour) || contour.length < 2) continue;
+      for (let i = 0; i < contour.length; i++) {
+        const a = contour[i];
+        const b = contour[(i + 1) % contour.length];
+        segs.push({ a, b });
+      }
+    }
+    return segs;
+  }, [contours]);
+
+  const draftLines = useMemo(() => {
+    const segs = [];
+    for (let i = 0; i < draftPoints.length - 1; i++) {
+      segs.push({ a: draftPoints[i], b: draftPoints[i + 1] });
+    }
+    return segs;
+  }, [draftPoints]);
+
+  const allLines = useMemo(() => {
+    return [...confirmedLines, ...draftLines];
+  }, [confirmedLines, draftLines]);
+
   const snapPoints = useMemo(() => {
     const pts = [];
-    for (const ln of lines) {
+
+    for (const ln of allLines) {
       pts.push({ x: ln.a.x, y: ln.a.y, type: '端点' });
       pts.push({ x: ln.b.x, y: ln.b.y, type: '端点' });
       pts.push({ x: (ln.a.x + ln.b.x) / 2, y: (ln.a.y + ln.b.y) / 2, type: '中点' });
     }
-    if (!closed && points.length >= 1) {
-      pts.push({ x: points[0].x, y: points[0].y, type: '始点' });
+
+    if (draftPoints.length >= 1) {
+      pts.push({
+        x: draftPoints[0].x,
+        y: draftPoints[0].y,
+        type: '始点',
+      });
     }
+
     return pts;
-  }, [lines, points, closed]);
+  }, [allLines, draftPoints]);
 
   function findSnap(worldP) {
-    // snapPx（画面px）をworld距離に変換
     const snapWorld = snapPx / view.scale;
-
     let best = null;
     let bestD = Infinity;
+
     for (const s of snapPoints) {
       const d = dist(worldP, s);
       if (d <= snapWorld && d < bestD) {
@@ -137,20 +192,23 @@ export default function SketchCanvas2D({
     const L = hasLen ? clamp(Number(cmdLength), 0, 9999999) : dist(startWorld, rawEndWorld || startWorld);
 
     if (hasAng) {
-      const ang = rad(Number(cmdAngle)); // 右=0°, 上=90°にしたいのでyはマイナス方向
+      const ang = rad(Number(cmdAngle));
       const dx = Math.cos(ang) * L;
       const dy = -Math.sin(ang) * L;
       return { x: startWorld.x + dx, y: startWorld.y + dy };
     }
 
-    // 角度なし（長さだけ）→マウス方向
     const end = rawEndWorld || startWorld;
     const vx = end.x - startWorld.x;
     const vy = end.y - startWorld.y;
     const vlen = Math.sqrt(vx * vx + vy * vy) || 1;
     const ux = vx / vlen;
     const uy = vy / vlen;
-    return { x: startWorld.x + ux * L, y: startWorld.y + uy * L };
+
+    return {
+      x: startWorld.x + ux * L,
+      y: startWorld.y + uy * L,
+    };
   }
 
   function clearNumbers() {
@@ -163,13 +221,23 @@ export default function SketchCanvas2D({
     setDraftStart(null);
     setDraftEnd(null);
     setSnapHit(null);
+    setDraftClosed(false);
     clearNumbers();
   }
 
   function resetAll() {
-    setPoints([]);
-    setClosed(false);
+    setContours([]);
+    setDraftPoints([]);
     cancelDraft();
+  }
+
+  function startNewContour() {
+    setDraftPoints([]);
+    setDraftClosed(false);
+    setDraftStart(null);
+    setDraftEnd(null);
+    setSnapHit(null);
+    clearNumbers();
   }
 
   function updateDraftEndByMouse(worldP) {
@@ -184,51 +252,31 @@ export default function SketchCanvas2D({
     setDraftEnd(end);
   }
 
-  function tryCloseIfNearStart(endWorld) {
-    if (points.length < 3) return false;
-    const s = points[0];
+  function finalizeContour(nextPoints) {
+    if (!Array.isArray(nextPoints) || nextPoints.length < 3) return;
+
+    setContours((prev) => [...prev, nextPoints]);
+    setDraftPoints([]);
+    setDraftClosed(true);
+    setDraftStart(null);
+    setDraftEnd(null);
+    setSnapHit(null);
+    clearNumbers();
+  }
+
+  function tryCloseIfNearStart(endWorld, currentPoints) {
+    if (currentPoints.length < 3) return false;
+    const s = currentPoints[0];
     const snapWorld = (snapPx / view.scale) * 1.2;
+
     if (dist(endWorld, s) <= snapWorld) {
-      setClosed(true);
-      cancelDraft();
+      finalizeContour(currentPoints);
       return true;
     }
     return false;
   }
 
-  function commitSegment(a, b) {
-    if (dist(a, b) < 0.0001) return;
-
-    // 1本目
-    if (points.length === 0) {
-      setPoints([a, b]);
-      setDraftStart(b);
-      setDraftEnd(b);
-      clearNumbers();
-      return;
-    }
-
-    if (closed) return;
-
-    // 閉じる判定
-    if (tryCloseIfNearStart(b)) return;
-
-    setPoints((prev) => [...prev, b]);
-    setDraftStart(b);
-    setDraftEnd(b);
-    clearNumbers();
-  }
-
-  function closeByButton() {
-    if (closed) return;
-    if (points.length < 3) return;
-    setClosed(true);
-    cancelDraft();
-  }
-
-  // ===== マウス操作 =====
   function onMouseDown(e) {
-    // 右ボタン/中ボタン：パン開始
     if (e.button === 2 || e.button === 1) {
       e.preventDefault();
       const sp = getScreenPoint(e);
@@ -242,52 +290,50 @@ export default function SketchCanvas2D({
       return;
     }
 
-    // 左クリック：作図
     if (e.button !== 0) return;
-    if (closed) return;
 
     const sp = getScreenPoint(e);
     const wp0 = screenToWorld(sp);
     const snap = findSnap(wp0);
     const wp = snap ? { x: snap.x, y: snap.y } : wp0;
 
-    // 始点がないなら始点
-    if (!draftStart) {
-      const start = points.length > 0 ? points[points.length - 1] : wp;
-      setDraftStart(start);
-      setDraftEnd(start);
+    // 新しい輪郭の1点目
+    if (draftPoints.length === 0) {
+      setDraftPoints([wp]);
+      setDraftStart(wp);
+      setDraftEnd(wp);
+      setDraftClosed(false);
       setSnapHit(snap ? { x: snap.x, y: snap.y, type: snap.type } : null);
-
-      if (points.length === 0) {
-        setPoints([start]); // 始点だけ入れておく
-      }
       return;
     }
 
-    // 終点確定
+    const currentStart = draftStart ?? draftPoints[draftPoints.length - 1];
     const endRaw = snap ? { x: snap.x, y: snap.y } : wp0;
-    const end = applyNumbersEnd(draftStart, endRaw);
+    const end = applyNumbersEnd(currentStart, endRaw);
 
-    // pointsが始点だけのとき
-    if (points.length === 1) {
-      const first = points[0];
-      setPoints([first, end]);
-      setDraftStart(end);
-      setDraftEnd(end);
-      clearNumbers();
-      return;
-    }
+    const nextPoints = [...draftPoints, end];
 
-    commitSegment(draftStart, end);
+    if (tryCloseIfNearStart(end, nextPoints)) return;
+
+    setDraftPoints(nextPoints);
+    setDraftStart(end);
+    setDraftEnd(end);
+    clearNumbers();
   }
 
   function onMouseMove(e) {
     const sp = getScreenPoint(e);
 
-    // パン中
     if (panDragRef.current.active) {
-      const dx = sp.x - panDragRef.current.startX;
-      const dy = sp.y - panDragRef.current.startY;
+      const PAN_SENS = 0.28;
+
+      const rawDx = sp.x - panDragRef.current.startX;
+      const rawDy = sp.y - panDragRef.current.startY;
+
+      // ✅ 微小ブレを無視
+      const dx = Math.abs(rawDx) < 0.5 ? 0 : rawDx * PAN_SENS;
+      const dy = Math.abs(rawDy) < 0.5 ? 0 : rawDy * PAN_SENS;
+
       setView((v) => ({
         ...v,
         panX: panDragRef.current.startPanX + dx,
@@ -295,79 +341,123 @@ export default function SketchCanvas2D({
       }));
       return;
     }
-
-    // 作図中の追従
     const wp = screenToWorld(sp);
     updateDraftEndByMouse(wp);
   }
 
   function onMouseUp() {
-    if (panDragRef.current.active) {
-      panDragRef.current.active = false;
-    }
+    stopPanDrag();
   }
 
-  // 右クリックメニュー無効（パンで使う）
   function onContextMenu(e) {
     e.preventDefault();
   }
 
-  // ホイール：ズーム（カーソル位置中心）
+  useEffect(() => {
+    function handleGlobalMouseUp() {
+      stopPanDrag();
+    }
+
+    function handleWindowBlur() {
+      stopPanDrag();
+    }
+
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    window.addEventListener('blur', handleWindowBlur);
+
+    return () => {
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, []);
+
   function onWheel(e) {
     e.preventDefault();
-    const c = canvasRef.current;
-    if (!c) return;
 
     const sp = getScreenPoint(e);
     const beforeWorld = screenToWorld(sp);
 
-    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-    const nextScale = clamp(view.scale * factor, 0.05, 30);
+    // ✅ 微小ホイールを無視
+    if (Math.abs(e.deltaY) < 0.5) return;
 
-    // “カーソル位置のworld座標”が動かないようにpanを調整
-    // sp = world*scale + pan  → pan = sp - world*scale
+    const factor = e.deltaY < 0 ? 1.015 : 1 / 1.015;
+    const nextScale = clamp(view.scale * factor, 0.2, 8);
     const nextPanX = sp.x - beforeWorld.x * nextScale;
     const nextPanY = sp.y - beforeWorld.y * nextScale;
 
-    setView({ scale: nextScale, panX: nextPanX, panY: nextPanY });
+    setView({
+      scale: nextScale,
+      panX: nextPanX,
+      panY: nextPanY,
+    });
   }
 
-  // キーボード
   useEffect(() => {
     function onKeyDown(e) {
-      if (e.key === 'Escape') cancelDraft();
+      if (e.key === 'Escape') {
+        cancelDraft();
+      }
+
       if (e.key === 'Enter') {
-        if (closed) return;
-        if (!draftStart) return;
+        if (!draftStart || draftPoints.length === 0) return;
 
         const end = applyNumbersEnd(draftStart, draftEnd || draftStart);
 
-        if (points.length === 1) {
-          const first = points[0];
-          setPoints([first, end]);
-          setDraftStart(end);
-          setDraftEnd(end);
-          clearNumbers();
-          return;
-        }
-        commitSegment(draftStart, end);
+        const nextPoints = [...draftPoints, end];
+        if (tryCloseIfNearStart(end, nextPoints)) return;
+
+        setDraftPoints(nextPoints);
+        setDraftStart(end);
+        setDraftEnd(end);
+        clearNumbers();
       }
     }
+
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftStart, draftEnd, cmdLength, cmdAngle, points, closed]);
+  }, [draftStart, draftEnd, cmdLength, cmdAngle, draftPoints, view.scale]);
 
-  // 親へ通知
+  const lastNotifyRef = useRef('');
+
+  // ✅ 親へ通知
   useEffect(() => {
-    onChangeRef.current?.({
-      profile: { points, closed },
-      lines,
-      view,
-    });
-  }, [points, closed, lines, view]);
+    const outerContour = contours[0] ?? [];
+    const holeContours = contours.slice(1);
 
-  // ===== 描画 =====
+    const payload = {
+      profile: {
+        outer: outerContour,
+        holes: holeContours,
+      },
+      contours,
+      draftPoints,
+      view,
+    };
+
+    const key = JSON.stringify(payload.profile);
+    if (lastNotifyRef.current === key) return;
+    lastNotifyRef.current = key;
+
+    onChangeRef.current?.(payload);
+  }, [contours, draftPoints, view]);
+
+  const info = useMemo(() => {
+    const start = draftStart;
+    const end = draftEnd;
+    if (!start || !end) return { length: '', angle: '' };
+
+    const L = dist(start, end);
+    const vx = end.x - start.x;
+    const vy = end.y - start.y;
+    const ang = Math.atan2(-vy, vx);
+    const angDeg = (degFromRad(ang) + 360) % 360;
+
+    return {
+      length: round1(L),
+      angle: round1(angDeg),
+    };
+  }, [draftStart, draftEnd]);
+
   useEffect(() => {
     const c = canvasRef.current;
     if (!c) return;
@@ -377,11 +467,9 @@ export default function SketchCanvas2D({
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, width, height);
 
-    // グリッド：1マス=100mm（太線）、10mm（薄線）
-    const major = 100; // mm
-    const minor = 10;  // mm
+    const major = 100;
+    const minor = 10;
 
-    // 画面に見えるworld範囲を計算
     const worldLeftTop = screenToWorld({ x: 0, y: 0 });
     const worldRightBottom = screenToWorld({ x: width, y: height });
 
@@ -415,32 +503,45 @@ export default function SketchCanvas2D({
       }
     }
 
-    // ズームが遠いときは細かいグリッドを省略（重い＆見えない）
     const pxPerMinor = minor * view.scale;
     if (pxPerMinor >= 6) {
       drawGrid(minor, '#f3f4f6', 1);
     }
     drawGrid(major, '#e5e7eb', 1);
 
-    // 原点クロス（world 0,0）
-    {
-      const o = worldToScreen({ x: 0, y: 0 });
-      ctx.strokeStyle = '#d1d5db';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(o.x - 10, o.y);
-      ctx.lineTo(o.x + 10, o.y);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(o.x, o.y - 10);
-      ctx.lineTo(o.x, o.y + 10);
-      ctx.stroke();
-    }
-
-    // 既存線
-    ctx.strokeStyle = '#111827';
+    const o = worldToScreen({ x: 0, y: 0 });
+    ctx.strokeStyle = '#d1d5db';
     ctx.lineWidth = 2;
-    for (const ln of lines) {
+    ctx.beginPath();
+    ctx.moveTo(o.x - 10, o.y);
+    ctx.lineTo(o.x + 10, o.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(o.x, o.y - 10);
+    ctx.lineTo(o.x, o.y + 10);
+    ctx.stroke();
+
+    // ✅ 確定済み輪郭
+    contours.forEach((contour, idx) => {
+      if (!Array.isArray(contour) || contour.length < 2) return;
+
+      ctx.strokeStyle = idx === 0 ? '#111827' : '#dc2626';
+      ctx.lineWidth = 2;
+
+      for (let i = 0; i < contour.length; i++) {
+        const a = worldToScreen(contour[i]);
+        const b = worldToScreen(contour[(i + 1) % contour.length]);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+    });
+
+    // ✅ draft
+    ctx.strokeStyle = '#2563eb';
+    ctx.lineWidth = 2;
+    for (const ln of draftLines) {
       const a = worldToScreen(ln.a);
       const b = worldToScreen(ln.b);
       ctx.beginPath();
@@ -449,20 +550,10 @@ export default function SketchCanvas2D({
       ctx.stroke();
     }
 
-    // スナップ点
-    for (const p of snapPoints) {
-      const sp = worldToScreen(p);
-      ctx.beginPath();
-      ctx.arc(sp.x, sp.y, p.type === '中点' ? 4 : 3, 0, Math.PI * 2);
-      ctx.fillStyle =
-        p.type === '中点' ? 'rgba(17,24,39,0.55)' : p.type === '始点' ? 'rgba(239,68,68,0.9)' : 'rgba(17,24,39,0.9)';
-      ctx.fill();
-    }
-
-    // ドラフト
-    if (!closed && draftStart && draftEnd) {
+    if (draftStart && draftEnd) {
       const a = worldToScreen(draftStart);
       const b = worldToScreen(draftEnd);
+
       ctx.setLineDash([6, 6]);
       ctx.strokeStyle = '#6b7280';
       ctx.lineWidth = 2;
@@ -474,11 +565,24 @@ export default function SketchCanvas2D({
 
       ctx.beginPath();
       ctx.arc(a.x, a.y, 5, 0, Math.PI * 2);
-      ctx.fillStyle = '#ef4444';
+      ctx.fillStyle = '#2563eb';
       ctx.fill();
     }
 
-    // スナップハイライト
+    // snap点
+    for (const p of snapPoints) {
+      const sp = worldToScreen(p);
+      ctx.beginPath();
+      ctx.arc(sp.x, sp.y, p.type === '中点' ? 4 : 3, 0, Math.PI * 2);
+      ctx.fillStyle =
+        p.type === '中点'
+          ? 'rgba(17,24,39,0.55)'
+          : p.type === '始点'
+          ? 'rgba(239,68,68,0.9)'
+          : 'rgba(17,24,39,0.9)';
+      ctx.fill();
+    }
+
     if (snapHit) {
       const sp = worldToScreen(snapHit);
       ctx.beginPath();
@@ -487,21 +591,7 @@ export default function SketchCanvas2D({
       ctx.lineWidth = 2;
       ctx.stroke();
     }
-  }, [width, height, lines, snapPoints, draftStart, draftEnd, snapHit, closed, view]);
-
-  const info = useMemo(() => {
-    const start = draftStart;
-    const end = draftEnd;
-    if (!start || !end) return { length: '', angle: '' };
-
-    const L = dist(start, end);
-    const vx = end.x - start.x;
-    const vy = end.y - start.y;
-    const ang = Math.atan2(-vy, vx);
-    const angDeg = (degFromRad(ang) + 360) % 360;
-
-    return { length: round1(L), angle: round1(angDeg) };
-  }, [draftStart, draftEnd]);
+  }, [width, height, contours, draftLines, snapPoints, draftStart, draftEnd, snapHit, view]);
 
   return (
     <div className="grid gap-3 lg:grid-cols-[1fr_320px]">
@@ -514,13 +604,14 @@ export default function SketchCanvas2D({
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
+          onMouseLeave={onMouseUp}
           onContextMenu={onContextMenu}
           onWheel={onWheel}
         />
         <div className="mt-2 text-xs text-gray-600">
-          ・グリッド：太線=100mm / 細線=10mm（ズームで自動表示）<br />
-          ・ホイール：拡大縮小（カーソル中心） / 右ドラッグ：移動（パン）<br />
-          ・クリックで線を追加、最後に「閉じる」で輪郭確定
+          ・1個目に閉じた輪郭 = 外形<br />
+          ・2個目以降に閉じた輪郭 = 穴<br />
+          ・四角穴は四角く囲んで「輪郭確定」すればOK
         </div>
 
         <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -528,13 +619,13 @@ export default function SketchCanvas2D({
           <div className="text-xs font-semibold">{Math.round(view.scale * 100)}%</div>
           <button
             className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
-            onClick={() => setView((v) => ({ ...v, scale: clamp(v.scale * 1.2, 0.05, 30) }))}
+            onClick={() => setView((v) => ({ ...v, scale: clamp(v.scale * 1.08, 0.2, 8) }))}
           >
             ＋
           </button>
           <button
             className="rounded-lg border px-2 py-1 text-xs hover:bg-gray-50"
-            onClick={() => setView((v) => ({ ...v, scale: clamp(v.scale / 1.2, 0.05, 30) }))}
+            onClick={() => setView((v) => ({ ...v, scale: clamp(v.scale / 1.08, 0.2, 8) }))}
           >
             －
           </button>
@@ -601,14 +692,26 @@ export default function SketchCanvas2D({
             </button>
 
             <button
-              className={`rounded-lg border px-3 py-1 text-sm ${points.length >= 3 && !closed ? 'hover:bg-gray-50' : 'opacity-40'}`}
-              disabled={points.length < 3 || closed}
-              onClick={closeByButton}
+              className={`rounded-lg border px-3 py-1 text-sm ${
+                draftPoints.length >= 3 ? 'hover:bg-gray-50' : 'opacity-40'
+              }`}
+              disabled={draftPoints.length < 3}
+              onClick={() => finalizeContour(draftPoints)}
             >
-              閉じる
+              輪郭確定
             </button>
 
-            <button className="rounded-lg border px-3 py-1 text-sm hover:bg-gray-50" onClick={cancelDraft}>
+            <button
+              className="rounded-lg border px-3 py-1 text-sm hover:bg-gray-50"
+              onClick={startNewContour}
+            >
+              新しい輪郭
+            </button>
+
+            <button
+              className="rounded-lg border px-3 py-1 text-sm hover:bg-gray-50"
+              onClick={cancelDraft}
+            >
               ドラフト取消
             </button>
           </div>
@@ -616,11 +719,16 @@ export default function SketchCanvas2D({
 
         <div className="rounded-lg border bg-white p-2 text-xs text-gray-600">
           <div className="font-semibold mb-1">輪郭</div>
-          点数：{points.length} / 状態：{closed ? '閉じた' : '未閉'}
+          外形：{contours.length >= 1 ? 'あり' : 'なし'}<br />
+          穴数：{Math.max(0, contours.length - 1)}<br />
+          作図中の点数：{draftPoints.length}
         </div>
 
         <div className="rounded-lg border bg-white p-2">
-          <button className="w-full rounded-lg border px-3 py-2 text-sm hover:bg-gray-50" onClick={resetAll}>
+          <button
+            className="w-full rounded-lg border px-3 py-2 text-sm hover:bg-gray-50"
+            onClick={resetAll}
+          >
             スケッチを全削除
           </button>
         </div>
