@@ -3,7 +3,7 @@
 
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Grid } from '@react-three/drei';
-import { useMemo } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
 
 function makeShapeFromProfile(outer, holes) {
@@ -25,7 +25,6 @@ function makeShapeFromProfile(outer, holes) {
       hole.lineTo(holePts[i].x, holePts[i].y);
     }
     hole.lineTo(holePts[0].x, holePts[0].y);
-
     shape.holes.push(hole);
   }
 
@@ -48,7 +47,6 @@ function PlateMesh({ outer, holes, thickness }) {
 
     geo.translate(0, 0, -t / 2);
     geo.computeVertexNormals();
-
     return geo;
   }, [outer, holes, thickness]);
 
@@ -61,6 +59,29 @@ function PlateMesh({ outer, holes, thickness }) {
   );
 }
 
+function ControlledOrbit({ active }) {
+  return (
+    <OrbitControls
+      enabled={active}
+      enableDamping={false}
+      autoRotate={false}
+      rotateSpeed={0.14}
+      zoomSpeed={0.12}
+      panSpeed={0.12}
+      screenSpacePanning={true}
+      mouseButtons={{
+        LEFT: THREE.MOUSE.ROTATE,
+        MIDDLE: THREE.MOUSE.DOLLY,
+        RIGHT: THREE.MOUSE.PAN,
+      }}
+      touches={{
+        ONE: THREE.TOUCH.ROTATE,
+        TWO: THREE.TOUCH.DOLLY_PAN,
+      }}
+    />
+  );
+}
+
 export default function PlatePreview3D({
   outer = [],
   holes = [],
@@ -68,37 +89,34 @@ export default function PlatePreview3D({
 }) {
   const canShow = Array.isArray(outer) && outer.length >= 3;
 
+  const wrapRef = useRef(null);
+  const [active, setActive] = useState(false);
+
   return (
-    <div className="h-[420px] w-full overflow-hidden rounded-xl border bg-white">
-      <Canvas camera={{ position: [500, 400, 600], fov: 45 }}>
+    <div
+      ref={wrapRef}
+      className="h-[420px] w-full overflow-hidden rounded-xl border bg-white"
+      onMouseDown={(e) => {
+        if (e.button === 0 || e.button === 1 || e.button === 2) {
+          setActive(true);
+        }
+      }}
+      onMouseUp={() => setActive(false)}
+      onMouseLeave={() => setActive(false)}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <Canvas
+        frameloop="demand"
+        camera={{ position: [500, 400, 600], fov: 45 }}
+      >
         <ambientLight intensity={0.9} />
         <directionalLight position={[400, 700, 500]} intensity={1.1} castShadow />
 
-        <Grid
-          infiniteGrid
-          cellSize={10}
-          sectionSize={100}
-          fadeDistance={5000}
-        />
+        <Grid infiniteGrid cellSize={10} sectionSize={100} fadeDistance={5000} />
 
-        {canShow ? (
-          <PlateMesh outer={outer} holes={holes} thickness={thickness} />
-        ) : null}
+        {canShow ? <PlateMesh outer={outer} holes={holes} thickness={thickness} /> : null}
 
-        <OrbitControls
-          makeDefault
-          enableDamping={false}
-          autoRotate={false}
-          rotateSpeed={0.28}
-          zoomSpeed={0.22}
-          panSpeed={0.22}
-          screenSpacePanning={true}
-          mouseButtons={{
-            LEFT: THREE.MOUSE.ROTATE,
-            MIDDLE: THREE.MOUSE.DOLLY,
-            RIGHT: THREE.MOUSE.PAN,
-          }}
-        />
+        <ControlledOrbit active={active} />
       </Canvas>
     </div>
   );

@@ -32,24 +32,21 @@ export default function SketchCanvas2D({
   const canvasRef = useRef(null);
   const onChangeRef = useRef(onChange);
   const lastLoadedRef = useRef('');
+  const lastNotifyRef = useRef('');
+  const hoverRef = useRef(false);
 
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
 
-  // ✅ 確定済み輪郭
   const [contours, setContours] = useState([]);
-
-  // ✅ 今描いている輪郭
   const [draftPoints, setDraftPoints] = useState([]);
   const [draftClosed, setDraftClosed] = useState(false);
 
-  // draft用
   const [draftStart, setDraftStart] = useState(null);
   const [draftEnd, setDraftEnd] = useState(null);
   const [snapHit, setSnapHit] = useState(null);
 
-  // 数値入力
   const [cmdLength, setCmdLength] = useState('');
   const [cmdAngle, setCmdAngle] = useState('');
   const [lockedByNumbers, setLockedByNumbers] = useState(false);
@@ -72,8 +69,6 @@ export default function SketchCanvas2D({
     panDragRef.current.active = false;
   }
 
-  // ✅ 外から開いたデータを反映
-  // 親の onChange で毎回ループしないように、内容が本当に変わった時だけ反映する
   useEffect(() => {
     const key = JSON.stringify({
       outer: Array.isArray(outer) ? outer : [],
@@ -297,7 +292,6 @@ export default function SketchCanvas2D({
     const snap = findSnap(wp0);
     const wp = snap ? { x: snap.x, y: snap.y } : wp0;
 
-    // 新しい輪郭の1点目
     if (draftPoints.length === 0) {
       setDraftPoints([wp]);
       setDraftStart(wp);
@@ -322,17 +316,29 @@ export default function SketchCanvas2D({
   }
 
   function onMouseMove(e) {
+    if (!hoverRef.current) {
+      stopPanDrag();
+      return;
+    }
+
     const sp = getScreenPoint(e);
 
     if (panDragRef.current.active) {
-      const PAN_SENS = 0.28;
+      const isRightPressed = (e.buttons & 2) === 2;
+      const isMiddlePressed = (e.buttons & 4) === 4;
+
+      if (!isRightPressed && !isMiddlePressed) {
+        stopPanDrag();
+        return;
+      }
+
+      const PAN_SENS = 0.18;
 
       const rawDx = sp.x - panDragRef.current.startX;
       const rawDy = sp.y - panDragRef.current.startY;
 
-      // ✅ 微小ブレを無視
-      const dx = Math.abs(rawDx) < 0.5 ? 0 : rawDx * PAN_SENS;
-      const dy = Math.abs(rawDy) < 0.5 ? 0 : rawDy * PAN_SENS;
+      const dx = Math.abs(rawDx) < 2 ? 0 : rawDx * PAN_SENS;
+      const dy = Math.abs(rawDy) < 2 ? 0 : rawDy * PAN_SENS;
 
       setView((v) => ({
         ...v,
@@ -341,6 +347,7 @@ export default function SketchCanvas2D({
       }));
       return;
     }
+
     const wp = screenToWorld(sp);
     updateDraftEndByMouse(wp);
   }
@@ -374,11 +381,11 @@ export default function SketchCanvas2D({
   function onWheel(e) {
     e.preventDefault();
 
+    if (!hoverRef.current) return;
+    if (Math.abs(e.deltaY) < 8) return;
+
     const sp = getScreenPoint(e);
     const beforeWorld = screenToWorld(sp);
-
-    // ✅ 微小ホイールを無視
-    if (Math.abs(e.deltaY) < 0.5) return;
 
     const factor = e.deltaY < 0 ? 1.015 : 1 / 1.015;
     const nextScale = clamp(view.scale * factor, 0.2, 8);
@@ -417,9 +424,6 @@ export default function SketchCanvas2D({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [draftStart, draftEnd, cmdLength, cmdAngle, draftPoints, view.scale]);
 
-  const lastNotifyRef = useRef('');
-
-  // ✅ 親へ通知
   useEffect(() => {
     const outerContour = contours[0] ?? [];
     const holeContours = contours.slice(1);
@@ -521,7 +525,6 @@ export default function SketchCanvas2D({
     ctx.lineTo(o.x, o.y + 10);
     ctx.stroke();
 
-    // ✅ 確定済み輪郭
     contours.forEach((contour, idx) => {
       if (!Array.isArray(contour) || contour.length < 2) return;
 
@@ -538,7 +541,6 @@ export default function SketchCanvas2D({
       }
     });
 
-    // ✅ draft
     ctx.strokeStyle = '#2563eb';
     ctx.lineWidth = 2;
     for (const ln of draftLines) {
@@ -569,7 +571,6 @@ export default function SketchCanvas2D({
       ctx.fill();
     }
 
-    // snap点
     for (const p of snapPoints) {
       const sp = worldToScreen(p);
       ctx.beginPath();
@@ -601,10 +602,17 @@ export default function SketchCanvas2D({
           width={width}
           height={height}
           className="h-auto w-full"
+          style={{ touchAction: 'none' }}
+          onMouseEnter={() => {
+            hoverRef.current = true;
+          }}
+          onMouseLeave={() => {
+            hoverRef.current = false;
+            onMouseUp();
+          }}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}
           onMouseUp={onMouseUp}
-          onMouseLeave={onMouseUp}
           onContextMenu={onContextMenu}
           onWheel={onWheel}
         />
