@@ -41,7 +41,6 @@ export default function SketchCanvas2D({
 
   const [contours, setContours] = useState([]);
   const [draftPoints, setDraftPoints] = useState([]);
-  const [draftClosed, setDraftClosed] = useState(false);
 
   const [draftStart, setDraftStart] = useState(null);
   const [draftEnd, setDraftEnd] = useState(null);
@@ -90,7 +89,6 @@ export default function SketchCanvas2D({
 
     setContours(nextContours);
     setDraftPoints([]);
-    setDraftClosed(false);
     setDraftStart(null);
     setDraftEnd(null);
     setSnapHit(null);
@@ -216,7 +214,6 @@ export default function SketchCanvas2D({
     setDraftStart(null);
     setDraftEnd(null);
     setSnapHit(null);
-    setDraftClosed(false);
     clearNumbers();
   }
 
@@ -228,7 +225,6 @@ export default function SketchCanvas2D({
 
   function startNewContour() {
     setDraftPoints([]);
-    setDraftClosed(false);
     setDraftStart(null);
     setDraftEnd(null);
     setSnapHit(null);
@@ -252,7 +248,6 @@ export default function SketchCanvas2D({
 
     setContours((prev) => [...prev, nextPoints]);
     setDraftPoints([]);
-    setDraftClosed(true);
     setDraftStart(null);
     setDraftEnd(null);
     setSnapHit(null);
@@ -296,7 +291,6 @@ export default function SketchCanvas2D({
       setDraftPoints([wp]);
       setDraftStart(wp);
       setDraftEnd(wp);
-      setDraftClosed(false);
       setSnapHit(snap ? { x: snap.x, y: snap.y, type: snap.type } : null);
       return;
     }
@@ -333,7 +327,6 @@ export default function SketchCanvas2D({
       }
 
       const PAN_SENS = 0.18;
-
       const rawDx = sp.x - panDragRef.current.startX;
       const rawDy = sp.y - panDragRef.current.startY;
 
@@ -409,8 +402,8 @@ export default function SketchCanvas2D({
         if (!draftStart || draftPoints.length === 0) return;
 
         const end = applyNumbersEnd(draftStart, draftEnd || draftStart);
-
         const nextPoints = [...draftPoints, end];
+
         if (tryCloseIfNearStart(end, nextPoints)) return;
 
         setDraftPoints(nextPoints);

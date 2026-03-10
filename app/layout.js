@@ -11,8 +11,12 @@ export default function RootLayout({ children }) {
   return (
     <html lang="ja">
       <body>
-        <AppHeader />
-        <main style={{ padding: 16 }}>{children}</main>
+        <div className="min-h-screen overflow-hidden bg-white">
+          <AppHeader />
+          <main className="px-4 py-4 overflow-hidden">
+            {children}
+          </main>
+        </div>
       </body>
     </html>
   );
