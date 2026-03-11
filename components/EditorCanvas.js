@@ -16,12 +16,14 @@ import {
   buildAngleGeometry,
   buildHBeamGeometry,
   buildPipeGeometry,
+  buildPipeElbowGeometry,
   buildRoundBarGeometry,
   buildFlatBarGeometry,
   buildSquarePipeGeometry,
   buildExpandedMetalGeometry,
   buildCheckeredPlateGeometry,
 } from '@/components/steel/sections';
+import { getLongElbowDimsByOD } from '@/components/steel/elbowLongJIS';
 
 const MM_BASE = 1000;
 
@@ -105,6 +107,17 @@ function applyScaleToObject(obj, scaleVec3) {
     const baseLen = Number(obj.dims?.length ?? 6000);
     const nextLen = Math.max(1, baseLen * Math.abs(sy));
     return { dims: { ...(obj.dims ?? {}), length: nextLen } };
+  }
+
+  // エルボは長さではなく全体スケール
+  if (obj.type === 'steel-elbow90' || obj.type === 'steel-elbow45') {
+    const base = obj.size ?? [MM_BASE, MM_BASE, MM_BASE];
+    const next = [
+      Math.max(1, base[0] * Math.abs(sx)),
+      Math.max(1, base[1] * Math.abs(sy)),
+      Math.max(1, base[2] * Math.abs(sz)),
+    ];
+    return { size: next };
   }
 
   // 板（width/height）
@@ -311,6 +324,19 @@ function buildGeometryFromShape(shape) {
     });
   }
 
+  if (shape.type === 'steel-elbow90' || shape.type === 'steel-elbow45') {
+    const dimsElbow = getLongElbowDimsByOD(steel.D);
+    const angleDeg = shape.type === 'steel-elbow45' ? 45 : 90;
+    const R = dimsElbow ? (angleDeg === 90 ? dimsElbow.F : dimsElbow.H) : 0;
+
+    return buildPipeElbowGeometry({
+      D: steel.D,
+      t: steel.t,
+      angleDeg,
+      R,
+    });
+  }
+
   if (shape.type === 'steel-roundbar') {
     return buildRoundBarGeometry({
       D: steel.D,
@@ -385,7 +411,7 @@ function buildGeometryFromShape(shape) {
 
     geo.computeVertexNormals();
     return geo;
-  }
+}
 
   return new THREE.BoxGeometry(MM_BASE, MM_BASE, MM_BASE);
 }
@@ -516,6 +542,7 @@ function FusedBody({
   selectable,
   fusedGeometry,
   showShadows,
+  transparentMode = false,
   currentTool,
   onSketchModeChange,
   onExtrudeModeChange,
@@ -600,7 +627,12 @@ function FusedBody({
             receiveShadow={!!showShadows}
             raycast={() => null}
           >
-            <meshStandardMaterial color={col} />
+            <meshStandardMaterial
+              color={col}
+              transparent={transparentMode}
+              opacity={transparentMode ? 0.35 : 1}
+              depthWrite={!transparentMode}
+            />
           </mesh>
         );
       })}
@@ -629,6 +661,7 @@ function MeshBody({
   onHover,
   selectable,
   showShadows,
+  transparentMode = false,
   currentTool,
   onSketchModeChange,
   onExtrudeModeChange,
@@ -645,7 +678,15 @@ function MeshBody({
   const pivot = obj.pivot ?? [0, 0, 0];
   const meshOffset = [-pivot[0], -pivot[1], -pivot[2]];
 
-  const Mat = <meshStandardMaterial key={color} color={color} />;
+  const Mat = (
+    <meshStandardMaterial
+      key={`${color}_${transparentMode ? 't' : 'o'}`}
+      color={color}
+      transparent={transparentMode}
+      opacity={transparentMode ? 0.35 : 1}
+      depthWrite={!transparentMode}
+    />
+  );
 
   const handlePointerDown = (e) => {
     if (blockPointer) return;
@@ -702,6 +743,8 @@ function MeshBody({
     obj.type === 'steel-angle' ||
     obj.type === 'steel-hbeam' ||
     obj.type === 'steel-pipe' ||
+    obj.type === 'steel-elbow90' ||
+    obj.type === 'steel-elbow45' ||
     obj.type === 'steel-roundbar' ||
     obj.type === 'steel-flatbar' ||
     obj.type === 'steel-squarepipe' ||
@@ -797,6 +840,7 @@ export default function EditorCanvas({
 
   showShadows = true,
   showGrid = true,
+  transparentMode = false,
 
   sketchMode,
   onSketchModeChange,
@@ -1230,6 +1274,7 @@ function isPickedPoint(objId, kind, p) {
                     selectable={selectable}
                     fusedGeometry={fusedGeo}
                     showShadows={showShadows}
+                    transparentMode={transparentMode}
                     currentTool={currentTool}
                     onSketchModeChange={onSketchModeChange}
                     onExtrudeModeChange={onExtrudeModeChange}
@@ -1246,6 +1291,7 @@ function isPickedPoint(objId, kind, p) {
                     onHover={onHover}
                     selectable={selectable}
                     showShadows={showShadows}
+                    transparentMode={transparentMode}
                     currentTool={currentTool}
                     onSketchModeChange={onSketchModeChange}
                     onExtrudeModeChange={onExtrudeModeChange}
@@ -1283,8 +1329,9 @@ function isPickedPoint(objId, kind, p) {
           onHover={onHover}
           selectable={selectable}
           fusedGeometry={fusedGeo}
-          showShadows={showShadows}
-          currentTool={currentTool}
+                    showShadows={showShadows}
+                    transparentMode={transparentMode}
+                    currentTool={currentTool}
           onSketchModeChange={onSketchModeChange}
           onExtrudeModeChange={onExtrudeModeChange}
           extrudeMode={extrudeMode}
@@ -1299,8 +1346,9 @@ function isPickedPoint(objId, kind, p) {
           onSelect={onSelect}
           onHover={onHover}
           selectable={selectable}
-          showShadows={showShadows}
-          currentTool={currentTool}
+                    showShadows={showShadows}
+                    transparentMode={transparentMode}
+                    currentTool={currentTool}
           onSketchModeChange={onSketchModeChange}
           onExtrudeModeChange={onExtrudeModeChange}
           extrudeMode={extrudeMode}
@@ -1360,8 +1408,9 @@ function isPickedPoint(objId, kind, p) {
                 onHover={onHover}
                 selectable={selectable}
                 fusedGeometry={fusedGeo}
-                showShadows={showShadows}
-                currentTool={currentTool}
+                    showShadows={showShadows}
+                    transparentMode={transparentMode}
+                    currentTool={currentTool}
                 onSketchModeChange={onSketchModeChange}
                 onExtrudeModeChange={onExtrudeModeChange}
                 extrudeMode={extrudeMode}
@@ -1376,8 +1425,9 @@ function isPickedPoint(objId, kind, p) {
                 onSelect={onSelect}
                 onHover={onHover}
                 selectable={selectable}
-                showShadows={showShadows}
-                currentTool={currentTool}
+                    showShadows={showShadows}
+                    transparentMode={transparentMode}
+                    currentTool={currentTool}
                 onSketchModeChange={onSketchModeChange}
                 onExtrudeModeChange={onExtrudeModeChange}
                 extrudeMode={extrudeMode}

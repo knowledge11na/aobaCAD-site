@@ -36,8 +36,10 @@ export default function EditorToolbar({
 
   showShadows,
   showGrid,
+  transparentMode,
   onToggleShadows,
   onToggleGrid,
+  onToggleTransparentMode,
 
   onOpenSteelPanel,
 
@@ -51,6 +53,7 @@ export default function EditorToolbar({
   const [openFile, setOpenFile] = useState(false);
   const [openView, setOpenView] = useState(false);
   const [openDup, setOpenDup] = useState(false);
+  const [openSettings, setOpenSettings] = useState(false);
 
   // ✅ ツールメニュー
   const [openTools, setOpenTools] = useState(false);
@@ -58,6 +61,7 @@ export default function EditorToolbar({
   const fileWrapRef = useRef(null);
   const viewWrapRef = useRef(null);
   const dupWrapRef = useRef(null);
+  const settingsWrapRef = useRef(null);
   const toolsWrapRef = useRef(null);
 
   useEffect(() => {
@@ -65,11 +69,12 @@ export default function EditorToolbar({
       if (openFile && fileWrapRef.current && !fileWrapRef.current.contains(e.target)) setOpenFile(false);
       if (openView && viewWrapRef.current && !viewWrapRef.current.contains(e.target)) setOpenView(false);
       if (openDup && dupWrapRef.current && !dupWrapRef.current.contains(e.target)) setOpenDup(false);
+      if (openSettings && settingsWrapRef.current && !settingsWrapRef.current.contains(e.target)) setOpenSettings(false);
       if (openTools && toolsWrapRef.current && !toolsWrapRef.current.contains(e.target)) setOpenTools(false);
     };
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
-  }, [openFile, openView, openDup, openTools]);
+  }, [openFile, openView, openDup, openSettings, openTools]);
 
   const Btn = ({ active, onClick, children, title, disabled }) => (
     <button
@@ -207,9 +212,33 @@ export default function EditorToolbar({
           ) : null}
         </div>
 
-        <button className="border px-2 py-1 hover:bg-gray-50" type="button">
-          設定
-        </button>
+        <div className="relative" ref={settingsWrapRef}>
+          <button
+            className="border px-2 py-1 hover:bg-gray-50"
+            type="button"
+            onClick={() => {
+              setOpenSettings((v) => !v);
+              setOpenFile(false);
+              setOpenView(false);
+              setOpenDup(false);
+              setOpenTools(false);
+            }}
+          >
+            設定 ▾
+          </button>
+
+          {openSettings ? (
+            <div className="absolute left-0 top-full z-50 mt-1 w-56 border bg-white shadow">
+              <button
+                className="w-full px-3 py-2 text-left text-xs hover:bg-gray-50"
+                type="button"
+                onClick={() => onToggleTransparentMode?.()}
+              >
+                {transparentMode ? '☑' : '☐'} 図形を半透明化
+              </button>
+            </div>
+          ) : null}
+        </div>
 
         {/* ✅ ツール（切板挿入） */}
         <div className="relative" ref={toolsWrapRef}>

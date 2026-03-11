@@ -18,12 +18,14 @@ import {
   buildAngleGeometry,
   buildHBeamGeometry,
   buildPipeGeometry,
+  buildPipeElbowGeometry,
   buildRoundBarGeometry,
   buildFlatBarGeometry,
   buildSquarePipeGeometry,
   buildExpandedMetalGeometry,
   buildCheckeredPlateGeometry,
 } from '@/components/steel/sections';
+import { getLongElbowDimsByOD } from '@/components/steel/elbowLongJIS';
 
 const DEFAULT_LEFT = 260;
 const DEFAULT_RIGHT = 260;
@@ -88,7 +90,9 @@ function defaultPivotFor(type, data) {
     type === 'steel-hbeam' ||
     type === 'steel-squarepipe' ||
     type === 'steel-expanded' ||
-    type === 'steel-checkered'
+    type === 'steel-checkered' ||
+    type === 'steel-elbow90' ||
+    type === 'steel-elbow45'
   ) {
     const s = data?.size ?? [MM_BASE, MM_BASE, MM_BASE];
     const w = Number(s[0]) || MM_BASE;
@@ -253,6 +257,10 @@ function SteelAddPanel({ catalog, draft, setDraft, onPlace, onCancel, disabled }
       ? catalog?.hBeams ?? []
       : kind === 'pipe'
       ? catalog?.pipes ?? []
+      : kind === 'elbow90'
+      ? catalog?.pipes ?? []
+      : kind === 'elbow45'
+      ? catalog?.pipes ?? []
       : kind === 'roundbar'
       ? catalog?.roundBars ?? []
       : kind === 'flatbar'
@@ -280,6 +288,10 @@ function SteelAddPanel({ catalog, draft, setDraft, onPlace, onCancel, disabled }
         : nextKind === 'hbeam'
         ? catalog?.hBeams ?? []
         : nextKind === 'pipe'
+        ? catalog?.pipes ?? []
+        : nextKind === 'elbow90'
+        ? catalog?.pipes ?? []
+        : nextKind === 'elbow45'
         ? catalog?.pipes ?? []
         : nextKind === 'roundbar'
         ? catalog?.roundBars ?? []
@@ -349,6 +361,18 @@ function SteelAddPanel({ catalog, draft, setDraft, onPlace, onCancel, disabled }
         L,
       });
     }
+    if (kind === 'elbow90' || kind === 'elbow45') {
+      const dims = getLongElbowDimsByOD(selected.D);
+      const angleDeg = kind === 'elbow45' ? 45 : 90;
+      const R = dims ? (angleDeg === 90 ? dims.F : dims.H) : 0;
+
+      return buildPipeElbowGeometry({
+        D: selected.D,
+        t: selected.t,
+        angleDeg,
+        R,
+      });
+    }
     if (kind === 'roundbar') {
       return buildRoundBarGeometry({
         D: selected.D,
@@ -410,6 +434,10 @@ function SteelAddPanel({ catalog, draft, setDraft, onPlace, onCancel, disabled }
           ? 'steel-hbeam'
           : kind === 'pipe'
           ? 'steel-pipe'
+          : kind === 'elbow90'
+          ? 'steel-elbow90'
+          : kind === 'elbow45'
+          ? 'steel-elbow45'
           : kind === 'roundbar'
           ? 'steel-roundbar'
           : kind === 'flatbar'
@@ -429,6 +457,8 @@ function SteelAddPanel({ catalog, draft, setDraft, onPlace, onCancel, disabled }
       dims:
         kind === 'expanded' || kind === 'checkered-plate'
           ? { width: W, height: Hh, t: selected?.t ?? selected?.T ?? null }
+          : kind === 'elbow90' || kind === 'elbow45'
+          ? {}
           : { length: L },
 
       // ✅ 生成済みジオメトリを渡す（EditorCanvas が __geometry 優先で描画する）
@@ -439,7 +469,8 @@ function SteelAddPanel({ catalog, draft, setDraft, onPlace, onCancel, disabled }
   }
 
   const isPlate = kind === 'expanded' || kind === 'checkered-plate';
-  const showLength = !isPlate;
+  const isElbow = kind === 'elbow90' || kind === 'elbow45';
+  const showLength = !isPlate && !isElbow;
   const showWH = isPlate;
 
   return (
@@ -457,6 +488,8 @@ function SteelAddPanel({ catalog, draft, setDraft, onPlace, onCancel, disabled }
             <option value="angle">アングル</option>
             <option value="hbeam">H鋼</option>
             <option value="pipe">ガス管</option>
+            <option value="elbow90">ロングエルボ 90°（ガス管）</option>
+            <option value="elbow45">ロングエルボ 45°（ガス管）</option>
             <option value="roundbar">丸鋼</option>
             <option value="flatbar">FB</option>
             <option value="squarepipe">角パイプ</option>
@@ -739,9 +772,11 @@ function InspectorPanel({ obj, onChange, selectedCount = 1, onSetColor }) {
       )}
 
       {/* ✅ steel：長さ L (mm) */}
-      {obj.type?.startsWith('steel-') &&
+       {obj.type?.startsWith('steel-') &&
       obj.type !== 'steel-expanded' &&
-      obj.type !== 'steel-checkered' ? (
+      obj.type !== 'steel-checkered' &&
+      obj.type !== 'steel-elbow90' &&
+      obj.type !== 'steel-elbow45' ? (
         <div>
           <div className="text-[10px] text-gray-500 mb-1">長さ L(mm)</div>
           <input
@@ -811,6 +846,7 @@ const [plateInsertModal, setPlateInsertModal] = useState({ open: false });
 
   const [showShadows, setShowShadows] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
+  const [transparentMode, setTransparentMode] = useState(false);
 
   // ===== 2D Sketch / Extrude =====
   const [sketchMode, setSketchMode] = useState(null);
@@ -1259,6 +1295,13 @@ function openPlateInsert() {
       const L = Math.max(1, num(dims.length, num(spec.length, 6000)));
       const D = Math.max(1, num(spec.D, 100));
       size = [D, L, D];
+    } else if (type === 'steel-elbow90' || type === 'steel-elbow45') {
+      const D = Math.max(1, num(spec.D, 100));
+      const dimsElbow = getLongElbowDimsByOD(spec.D);
+      const angleDeg = type === 'steel-elbow45' ? 45 : 90;
+      const R = dimsElbow ? (angleDeg === 90 ? dimsElbow.F : dimsElbow.H) : D * 3;
+      const box = Math.max(D, R * 2 + D);
+      size = [box, box, box];
     } else if (type === 'steel-roundbar') {
       const L = Math.max(1, num(dims.length, num(spec.length, 6000)));
       const D = Math.max(1, num(spec.D, 50));
@@ -2221,8 +2264,10 @@ onPickPlate={(payload, options) => {
           canFuse={canFuse}
           showShadows={showShadows}
           showGrid={showGrid}
+          transparentMode={transparentMode}
           onToggleShadows={() => setShowShadows((v) => !v)}
           onToggleGrid={() => setShowGrid((v) => !v)}
+          onToggleTransparentMode={() => setTransparentMode((v) => !v)}
           onStartSketch2D={startSketch2D}
           onStartExtrude={startExtrude}
 	  onOpenPlateInsert={openPlateInsert}
@@ -2361,6 +2406,7 @@ onPickPlate={(payload, options) => {
             onCommitPanDelta={(delta) => commitPanDelta(delta)}
             showShadows={showShadows}
             showGrid={showGrid}
+            transparentMode={transparentMode}
             sketchMode={sketchMode}
             onSketchModeChange={(v) => {
               if (!v) return;

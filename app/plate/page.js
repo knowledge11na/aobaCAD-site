@@ -10,20 +10,21 @@ import PlateFileModal from '@/components/plate/PlateFileModal';
 export default function PlatePage() {
   const [thickness, setThickness] = useState(9);
 
+  // ✅ 外形1個 + 穴複数
   const [profile, setProfile] = useState({
     outer: [],
     holes: [],
   });
 
-  const [fileModal, setFileModal] = useState({ open: false, mode: 'save' });
+  const [fileModal, setFileModal] = useState({ open: false, mode: 'save' }); // 'save'|'open'
 
   const handleChange = useCallback((data) => {
-    if (!data?.profile) return;
-
-    setProfile({
-      outer: Array.isArray(data.profile.outer) ? data.profile.outer : [],
-      holes: Array.isArray(data.profile.holes) ? data.profile.holes : [],
-    });
+    if (data?.profile) {
+      setProfile({
+        outer: Array.isArray(data.profile.outer) ? data.profile.outer : [],
+        holes: Array.isArray(data.profile.holes) ? data.profile.holes : [],
+      });
+    }
   }, []);
 
   const canExtrude = useMemo(() => {
@@ -57,7 +58,7 @@ export default function PlatePage() {
   }
 
   return (
-    <div className="space-y-4 overflow-hidden">
+    <div className="space-y-4">
       <PlateFileModal
         open={fileModal.open}
         mode={fileModal.mode}
