@@ -457,17 +457,24 @@ function finalizeContour(nextPoints) {
 }
 
 
-  function tryCloseIfNearStart(endWorld, currentPoints) {
-    if (currentPoints.length < 3) return false;
-    const s = currentPoints[0];
-    const snapWorld = (snapPx / view.scale) * 1.2;
+function tryCloseIfNearStart(endWorld, currentPoints) {
 
-    if (dist(endWorld, s) <= snapWorld) {
-      finalizeContour(currentPoints);
-      return true;
-    }
-    return false;
+  if (currentPoints.length < 3) return false;
+
+  const start = currentPoints[0];
+  const snapWorld = (snapPx / view.scale) * 1.2;
+
+  if (dist(endWorld, start) <= snapWorld) {
+
+    // ⭐ 最後を始点にスナップして閉じる
+    const closed = [...currentPoints.slice(0, -1), start];
+
+    finalizeContour(closed);
+    return true;
   }
+
+  return false;
+}
 
   function addLooseLine(start, end) {
     if (!start || !end) return;
@@ -911,10 +918,10 @@ if (lineMode === 'circleHole' && e.key === 'Enter') {
     const holeContours = contours.slice(1);
 
 const payload = {
-  profile: {
-    points: outerContour,
-    closed: true
-  },
+profile: {
+  outer: outerContour,
+  holes: holeContours
+},
 
   meta: {
     holes: holeContours
