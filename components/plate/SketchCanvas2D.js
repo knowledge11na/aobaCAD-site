@@ -910,16 +910,21 @@ if (lineMode === 'circleHole' && e.key === 'Enter') {
     const outerContour = contours[0] ?? [];
     const holeContours = contours.slice(1);
 
-    const payload = {
-      profile: {
-        outer: outerContour,
-        holes: holeContours,
-      },
-      contours,
-      looseLines,
-      draftPoints,
-      view,
-    };
+const payload = {
+  profile: {
+    points: outerContour,
+    closed: true
+  },
+
+  meta: {
+    holes: holeContours
+  },
+
+  contours,
+  looseLines,
+  draftPoints,
+  view,
+};
 
     const key = JSON.stringify(payload.profile);
     if (lastNotifyRef.current === key) return;
