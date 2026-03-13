@@ -1,22 +1,25 @@
-// file: app/plate/page.js
 'use client';
 
 import Link from 'next/link';
 import { useCallback, useMemo, useState } from 'react';
-import SketchCanvas2D from '@/components/plate/SketchCanvas2D';
+import dynamic from 'next/dynamic';
 import PlatePreview3D from '@/components/plate/PlatePreview3D';
 import PlateFileModal from '@/components/plate/PlateFileModal';
+
+const SketchCanvas2D = dynamic(
+  () => import('@/components/plate/SketchCanvas2D'),
+  { ssr: false }
+);
 
 export default function PlatePage() {
   const [thickness, setThickness] = useState(9);
 
-  // ✅ 外形1個 + 穴複数
   const [profile, setProfile] = useState({
     outer: [],
     holes: [],
   });
 
-  const [fileModal, setFileModal] = useState({ open: false, mode: 'save' }); // 'save'|'open'
+  const [fileModal, setFileModal] = useState({ open: false, mode: 'save' });
 
   const handleChange = useCallback((data) => {
     if (data?.profile) {
@@ -75,7 +78,6 @@ export default function PlatePage() {
             className="rounded-lg border px-3 py-1 text-sm hover:bg-gray-50"
             type="button"
             onClick={() => setFileModal({ open: true, mode: 'save' })}
-            title="切板を保存（ブラウザ保存）"
           >
             保存
           </button>
@@ -84,7 +86,6 @@ export default function PlatePage() {
             className="rounded-lg border px-3 py-1 text-sm hover:bg-gray-50"
             type="button"
             onClick={() => setFileModal({ open: true, mode: 'open' })}
-            title="保存した切板を開く"
           >
             開く
           </button>

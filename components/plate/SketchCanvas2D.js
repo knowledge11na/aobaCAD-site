@@ -48,21 +48,6 @@ function distToSegment(p, a, b) {
   return dist(p, { x: px, y: py });
 }
 
-function createCirclePoints(cx, cy, diameter, segments = 48) {
-  const r = diameter / 2;
-  const pts = [];
-
-  for (let i = 0; i < segments; i++) {
-    const a = (i / segments) * Math.PI * 2;
-    pts.push({
-      x: cx + r * Math.cos(a),
-      y: cy + r * Math.sin(a),
-    });
-  }
-
-  return pts;
-}
-
 export default function SketchCanvas2D({
   width = 700,
   height = 450,
@@ -91,12 +76,8 @@ export default function SketchCanvas2D({
   const [draftEnd, setDraftEnd] = useState(null);
   const [snapHit, setSnapHit] = useState(null);
 
-const [lineMode, setLineMode] = useState('single');
-// 'single' | 'contour' | 'hole' | 'circleHole'
+  const [lineMode, setLineMode] = useState('single');
   const [selectedSegment, setSelectedSegment] = useState(null);
-const [circleDiameter, setCircleDiameter] = useState(10); // mm
-const [circleCenterX, setCircleCenterX] = useState('');
-const [circleCenterY, setCircleCenterY] = useState('');
 
   const [cmdLength, setCmdLength] = useState('');
   const [cmdAngle, setCmdAngle] = useState('');
@@ -391,22 +372,6 @@ const [circleCenterY, setCircleCenterY] = useState('');
     clearManualInputs();
   }
 
-function addCircleHole(cx, cy, dia) {
-
-  const circle = createCirclePoints(cx, cy, dia);
-
-  pushHistory();
-
-  setContours(prev => {
-    if (prev.length === 0) {
-      alert("外形を先に作ってください");
-      return prev;
-    }
-    return [...prev, circle];
-  });
-
-}
-
   function startNewContour() {
     setLineMode('contour');
     clearDraftOnly();
@@ -431,50 +396,27 @@ function addCircleHole(cx, cy, dia) {
     setDraftEnd(end);
   }
 
-function finalizeContour(nextPoints) {
-  if (!Array.isArray(nextPoints) || nextPoints.length < 3) return;
+  function finalizeContour(nextPoints) {
+    if (!Array.isArray(nextPoints) || nextPoints.length < 3) return;
 
-  pushHistory();
-
-  if (lineMode === 'hole') {
-    setContours((prev) => {
-      if (prev.length === 0) {
-        alert('外形を先に作ってください');
-        return prev;
-      }
-      return [...prev, nextPoints]; // hole
-    });
-  } else {
-    setContours((prev) => {
-      if (prev.length === 0) return [nextPoints]; // outer
-      return [...prev, nextPoints];
-    });
+    pushHistory();
+    setContours((prev) => [...prev, nextPoints]);
+    clearDraftOnly();
+    setDraftClosed(true);
+    clearNumbers();
   }
 
-  clearDraftOnly();
-  setDraftClosed(true);
-  clearNumbers();
-}
+  function tryCloseIfNearStart(endWorld, currentPoints) {
+    if (currentPoints.length < 3) return false;
+    const s = currentPoints[0];
+    const snapWorld = (snapPx / view.scale) * 1.2;
 
-
-function tryCloseIfNearStart(endWorld, currentPoints) {
-
-  if (currentPoints.length < 3) return false;
-
-  const start = currentPoints[0];
-  const snapWorld = (snapPx / view.scale) * 1.2;
-
-  if (dist(endWorld, start) <= snapWorld) {
-
-    // ⭐ 最後を始点にスナップして閉じる
-    const closed = [...currentPoints.slice(0, -1), start];
-
-    finalizeContour(closed);
-    return true;
+    if (dist(endWorld, s) <= snapWorld) {
+      finalizeContour(currentPoints);
+      return true;
+    }
+    return false;
   }
-
-  return false;
-}
 
   function addLooseLine(start, end) {
     if (!start || !end) return;
@@ -682,24 +624,24 @@ function tryCloseIfNearStart(endWorld, currentPoints) {
     setManualEndY(String(round1(p.y)));
   }
 
-function onMouseDown(e) {
+  function onMouseDown(e) {
+    if (e.button === 2 || e.button === 1) {
+      e.preventDefault();
+      const sp = getScreenPoint(e);
+      panDragRef.current = {
+        active: true,
+        startX: sp.x,
+        startY: sp.y,
+        startPanX: view.panX,
+        startPanY: view.panY,
+      };
+      return;
+    }
 
-  if (e.button !== 0) return;
+    if (e.button !== 0) return;
 
-  // ⭐ 円穴モード
-if (lineMode === 'circleHole') {
-
-  const sp = getScreenPoint(e);
-  const wp = screenToWorld(sp);
-
-  setDraftPoints([{ x: wp.x, y: wp.y }]); // 中心
-  clearNumbers();
-
-  return;
-}
-
-  const sp = getScreenPoint(e);
-  const wp0 = screenToWorld(sp);
+    const sp = getScreenPoint(e);
+    const wp0 = screenToWorld(sp);
 
     if (e.ctrlKey) {
       const hit = findAnySegmentNear(wp0);
@@ -801,32 +743,6 @@ if (lineMode === 'circleHole') {
 
   useEffect(() => {
     function onKeyDown(e) {
-
-
-if (lineMode === 'circleHole' && e.key === 'Enter') {
-
-  if (draftPoints.length === 0) return;
-
-  const c = draftPoints[0];
-
-  const circle = createCirclePoints(
-    c.x,
-    c.y,
-    circleDiameter
-  );
-
-  pushHistory();
-
-  setContours(prev => {
-    if (prev.length === 0) {
-      alert("外形を先に作ってください");
-      return prev;
-    }
-    return [...prev, circle];
-  });
-
-  clearDraftOnly();
-}
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
         restoreHistory();
@@ -893,7 +809,6 @@ if (lineMode === 'circleHole' && e.key === 'Enter') {
       }
     }
 
-
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
@@ -917,21 +832,16 @@ if (lineMode === 'circleHole' && e.key === 'Enter') {
     const outerContour = contours[0] ?? [];
     const holeContours = contours.slice(1);
 
-const payload = {
-profile: {
-  outer: outerContour,
-  holes: holeContours
-},
-
-  meta: {
-    holes: holeContours
-  },
-
-  contours,
-  looseLines,
-  draftPoints,
-  view,
-};
+    const payload = {
+      profile: {
+        outer: outerContour,
+        holes: holeContours,
+      },
+      contours,
+      looseLines,
+      draftPoints,
+      view,
+    };
 
     const key = JSON.stringify(payload.profile);
     if (lastNotifyRef.current === key) return;
@@ -1368,75 +1278,6 @@ profile: {
             </button>
           </div>
         </div>
-
-<button
-  className={`rounded-lg border px-3 py-1 text-sm ${
-    lineMode === 'hole' ? 'bg-red-50 border-red-300' : 'hover:bg-gray-50'
-  }`}
-  onClick={() => {
-    setLineMode('hole');
-    clearDraftOnly();
-    clearNumbers();
-  }}
->
-  穴モード
-</button>
-
-<button
-  className={`rounded-lg border px-3 py-1 text-sm ${
-    lineMode === 'circleHole'
-      ? 'bg-red-50 border-red-300'
-      : 'hover:bg-gray-50'
-  }`}
-  onClick={() => setLineMode('circleHole')}
->
-  円穴
-</button>
-
-<div className="flex items-center gap-2 text-sm mt-1">
-  φ
-  <input
-    type="number"
-    value={circleDiameter}
-    onChange={(e)=>setCircleDiameter(Number(e.target.value))}
-    className="border rounded px-2 py-1 w-20"
-  />
-</div>
-
-<div className="flex items-center gap-2 text-sm mt-2">
-  中心X
-  <input
-    type="number"
-    value={circleCenterX}
-    onChange={(e)=>setCircleCenterX(e.target.value)}
-    className="border rounded px-2 py-1 w-20"
-  />
-</div>
-
-<div className="flex items-center gap-2 text-sm mt-1">
-  中心Y
-  <input
-    type="number"
-    value={circleCenterY}
-    onChange={(e)=>setCircleCenterY(e.target.value)}
-    className="border rounded px-2 py-1 w-20"
-  />
-</div>
-
-<button
-  className="rounded-lg border px-3 py-1 text-sm hover:bg-gray-50 mt-2"
-  onClick={()=>{
-    const cx = Number(circleCenterX);
-    const cy = Number(circleCenterY);
-    const dia = Number(circleDiameter);
-
-    if(!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(dia)) return;
-
-    addCircleHole(cx,cy,dia);
-  }}
->
-  この位置に円穴作成
-</button>
 
         <div className="rounded-lg border bg-white p-2 text-xs text-gray-600">
           <div className="font-semibold mb-1">輪郭</div>
