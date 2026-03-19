@@ -2158,24 +2158,30 @@ function openPlateInsert() {
   onClose={() => setPlateInsertModal({ open: false })}
   // PlateInsertModal の onPickPlate を差し替え
 onPickPlate={(payload, options) => {
-  const plate = payload?.plate ?? payload ?? null;
-  const profile = plate?.profile ?? payload?.profile ?? null;
-  const pts = profile?.points ?? [];
+const plate = payload?.plate ?? payload ?? null;
+const profile = plate?.profile ?? payload?.profile ?? null;
 
-  if (!pts.length) {
-    alert('この切板データに輪郭(profile)が見つかりません。');
-    return;
-  }
+const outer = profile?.outer ?? [];
+const holes = profile?.holes ?? [];
+
+if (!outer.length) {
+  alert('この切板データに外形(profile.outer)が見つかりません。');
+  return;
+}
 
   // 厚み：データにあれば拾う。無ければ 12mm デフォ
   const t = Number(plate?.t ?? plate?.thickness ?? profile?.t ?? 12) || 12;
 
   // points -> Shape
-  const norm = pts.map((p) => ({ x: Number(p.x) || 0, y: Number(p.y) || 0 }));
-  if (norm.length < 3) {
-    alert('切板の輪郭点が不足しています。');
-    return;
-  }
+const norm = outer.map((p) => ({
+  x: Number(p.x) || 0,
+  y: Number(p.y) || 0,
+}));
+
+if (norm.length < 3) {
+  alert('切板の輪郭点が不足しています。');
+  return;
+}
 
   const first = norm[0];
   const last = norm[norm.length - 1];

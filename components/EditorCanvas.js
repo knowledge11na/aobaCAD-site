@@ -1500,4 +1500,3 @@ function isPickedPoint(objId, kind, p) {
     </Canvas>
   );
 }
-
