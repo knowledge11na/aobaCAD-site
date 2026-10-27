@@ -62,10 +62,10 @@ export default function FileManagerModal({
   }, [open]);
 
   const folders = fs?.folders ?? [];
-  const activeFolder = useMemo(() => folders.find((f) => f.id === activeFolderId) ?? folders[0] ?? null, [
-    folders,
-    activeFolderId,
-  ]);
+  const activeFolder = useMemo(() => {
+    const list = fs?.folders ?? [];
+    return list.find((f) => f.id === activeFolderId) ?? list[0] ?? null;
+  }, [fs, activeFolderId]);
   const files = activeFolder?.files ?? [];
 
   function commit(next) {

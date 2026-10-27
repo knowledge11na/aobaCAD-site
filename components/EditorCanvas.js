@@ -5,6 +5,7 @@ import { Canvas } from '@react-three/fiber';
 import { Grid, Outlines, TransformControls, GizmoHelper, GizmoViewport, OrbitControls } from '@react-three/drei';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import { CSG } from 'three-csg-ts';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import CustomCameraControls from '@/components/CustomCameraControls';
 import SketchOverlay, { hatchShapeMesh } from '@/components/sketch2d/SketchOverlay';
@@ -26,6 +27,8 @@ import {
 import { getLongElbowDimsByOD } from '@/components/steel/elbowLongJIS';
 
 const MM_BASE = 1000;
+const ZERO_VEC3 = Object.freeze([0, 0, 0]);
+const UNIT_SCALE = Object.freeze([1, 1, 1]);
 
 function wheelStep(e) {
   const dy = e.deltaY;
@@ -214,14 +217,110 @@ function buildFusedGeometry(fused) {
 
 /**
  * ✅ Editor全体の形状生成をここに統一
- * - SteelAddPanel から渡される __geometry があれば最優先（確実に同じ見た目）
- * - そうでなければ type/spec/dims/steel から sections.js で再生成
+ * - 長さのある鋼材は spec/dims から再生成し、外形角をローカル原点にそろえる
+ * - その他は SteelAddPanel から渡される __geometry があれば優先する
  */
+const LINEAR_STEEL_TYPES = new Set([
+  'steel-channel',
+  'steel-angle',
+  'steel-hbeam',
+  'steel-pipe',
+  'steel-roundbar',
+  'steel-flatbar',
+  'steel-squarepipe',
+]);
+
+// CSG結果には細長い三角形があり、その法線は不安定。面積で重み付けして、
+// 大きな面の陰影が細長い三角形に引きずられて黒ずむのを防ぐ
+function buildAreaWeightedCreasedGeometry(positions, creaseAngle) {
+  const triCount = positions.length / 9;
+  const faceNormals = new Array(triCount);
+  const areas = new Array(triCount);
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const key = (i) =>
+    `${Math.round(positions[i] * 100)}_${Math.round(positions[i + 1] * 100)}_${Math.round(positions[i + 2] * 100)}`;
+  const byVertex = new Map();
+
+  for (let t = 0; t < triCount; t++) {
+    a.fromArray(positions, t * 9);
+    b.fromArray(positions, t * 9 + 3);
+    c.fromArray(positions, t * 9 + 6);
+    const n = b.clone().sub(a).cross(c.clone().sub(a));
+    const len = n.length();
+    areas[t] = len / 2;
+    faceNormals[t] = len > 0 ? n.divideScalar(len) : n;
+    for (let k = 0; k < 3; k++) {
+      const vk = key(t * 9 + k * 3);
+      const list = byVertex.get(vk);
+      if (list) list.push(t);
+      else byVertex.set(vk, [t]);
+    }
+  }
+
+  const cosCrease = Math.cos(creaseAngle);
+  const normals = new Float32Array(positions.length);
+  for (let t = 0; t < triCount; t++) {
+    // 細長い三角形自身の法線は、面積の大きい周囲の三角形に合わせる
+    for (let k = 0; k < 3; k++) {
+      const neighbors = byVertex.get(key(t * 9 + k * 3));
+      let ref = faceNormals[t];
+      let refArea = areas[t];
+      for (const o of neighbors) {
+        if (areas[o] > refArea && faceNormals[o].dot(faceNormals[t]) > cosCrease) {
+          ref = faceNormals[o];
+          refArea = areas[o];
+        }
+      }
+      const sum = new THREE.Vector3();
+      for (const o of neighbors) {
+        if (faceNormals[o].dot(ref) > cosCrease) sum.addScaledVector(faceNormals[o], areas[o]);
+      }
+      if (sum.lengthSq() === 0) sum.copy(faceNormals[t]);
+      sum.normalize();
+      sum.toArray(normals, t * 9 + k * 3);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  return geometry;
+}
+
 function buildGeometryFromShape(shape) {
   if (!shape) return new THREE.BoxGeometry(MM_BASE, MM_BASE, MM_BASE);
 
+  if (shape.meshData) {
+    const positions = shape.meshData.positions;
+    if (!Array.isArray(positions) || positions.length % 3 !== 0) {
+      throw new Error(`Invalid stored mesh geometry for shape "${shape.name ?? shape.type}"`);
+    }
+    const raw = new THREE.BufferGeometry();
+    // CSG由来の面積ゼロの三角形は法線が不定になり黒ずみの原因になるため除く
+    const cleaned = [];
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    for (let i = 0; i < positions.length; i += 9) {
+      a.fromArray(positions, i);
+      b.fromArray(positions, i + 3);
+      c.fromArray(positions, i + 6);
+      const area2 = b.clone().sub(a).cross(c.clone().sub(a)).lengthSq();
+      if (area2 > 1e-8) cleaned.push(...positions.slice(i, i + 9));
+    }
+    raw.setAttribute('position', new THREE.Float32BufferAttribute(cleaned, 3));
+    // 円形の穴などが面ごとに明暗の縞にならないよう、緩い角は滑らかな法線にする
+    const geometry = buildAreaWeightedCreasedGeometry(cleaned, Math.PI / 6);
+    raw.dispose();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
+  }
+
   // ✅ 先に「渡されたジオメトリ」を優先（clone）
-  if (shape.__geometry) {
+  if (shape.__geometry && !LINEAR_STEEL_TYPES.has(shape.type)) {
     const g = shape.__geometry;
     return g?.clone ? g.clone() : g;
   }
@@ -281,9 +380,16 @@ function buildGeometryFromShape(shape) {
 
   const fallbackL = Math.max(1, num(shape.length, num(steel.length, num(shape.size?.[0], MM_BASE))));
   const L = Math.max(1, num(dims.length, fallbackL));
+  const anchorSteelGeometry = (geometry) => {
+    geometry.computeBoundingBox();
+    const min = geometry.boundingBox.min;
+    geometry.translate(-min.x, -min.y, -min.z);
+    geometry.computeBoundingBox();
+    return geometry;
+  };
 
   if (shape.type === 'steel-channel') {
-    return buildChannelGeometry({
+    return anchorSteelGeometry(buildChannelGeometry({
       H: steel.H,
       B: steel.B,
       t1: steel.t1,
@@ -291,37 +397,37 @@ function buildGeometryFromShape(shape) {
       r1: steel.r1 ?? 0,
       r2: steel.r2 ?? 0,
       L,
-    });
+    }));
   }
 
   if (shape.type === 'steel-angle') {
-    return buildAngleGeometry({
+    return anchorSteelGeometry(buildAngleGeometry({
       A: steel.A,
       B: steel.B,
       t: steel.t,
       r1: steel.r1 ?? 0,
       r2: steel.r2 ?? 0,
       L,
-    });
+    }));
   }
 
   if (shape.type === 'steel-hbeam') {
-    return buildHBeamGeometry({
+    return anchorSteelGeometry(buildHBeamGeometry({
       H: steel.H,
       B: steel.B,
       t1: steel.t1,
       t2: steel.t2,
       r: steel.r ?? 0,
       L,
-    });
+    }));
   }
 
   if (shape.type === 'steel-pipe') {
-    return buildPipeGeometry({
+    return anchorSteelGeometry(buildPipeGeometry({
       D: steel.D,
       t: steel.t,
       L,
-    });
+    }));
   }
 
   if (shape.type === 'steel-elbow90' || shape.type === 'steel-elbow45') {
@@ -338,27 +444,27 @@ function buildGeometryFromShape(shape) {
   }
 
   if (shape.type === 'steel-roundbar') {
-    return buildRoundBarGeometry({
+    return anchorSteelGeometry(buildRoundBarGeometry({
       D: steel.D,
       L,
-    });
+    }));
   }
 
   if (shape.type === 'steel-flatbar') {
-    return buildFlatBarGeometry({
+    return anchorSteelGeometry(buildFlatBarGeometry({
       H: steel.H,
       t: steel.t,
       L,
-    });
+    }));
   }
 
   if (shape.type === 'steel-squarepipe') {
-    return buildSquarePipeGeometry({
+    return anchorSteelGeometry(buildSquarePipeGeometry({
       H: steel.H,
       B: steel.B,
       t: steel.t,
       L,
-    });
+    }));
   }
 
   if (shape.type === 'steel-expanded') {
@@ -416,6 +522,497 @@ function buildGeometryFromShape(shape) {
   return new THREE.BoxGeometry(MM_BASE, MM_BASE, MM_BASE);
 }
 
+function calculateGeometryVolumeMm3(geometry) {
+  const position = geometry.getAttribute('position');
+  if (!position) {
+    throw new Error('Cannot calculate volume: geometry has no vertices');
+  }
+
+  const index = geometry.getIndex();
+  const vertexCount = index ? index.count : position.count;
+  if (vertexCount % 3 !== 0) {
+    throw new Error('Cannot calculate volume: invalid triangle data');
+  }
+
+  let volumeMm3 = 0;
+  for (let i = 0; i < vertexCount; i += 3) {
+    const ia = index ? index.getX(i) : i;
+    const ib = index ? index.getX(i + 1) : i + 1;
+    const ic = index ? index.getX(i + 2) : i + 2;
+    const ax = position.getX(ia);
+    const ay = position.getY(ia);
+    const az = position.getZ(ia);
+    const bx = position.getX(ib);
+    const by = position.getY(ib);
+    const bz = position.getZ(ib);
+    const cx = position.getX(ic);
+    const cy = position.getY(ic);
+    const cz = position.getZ(ic);
+
+    volumeMm3 += (
+      ax * (by * cz - bz * cy) +
+      ay * (bz * cx - bx * cz) +
+      az * (bx * cy - by * cx)
+    ) / 6;
+  }
+  return Math.abs(volumeMm3);
+}
+
+export function getShapeWeightKg(shape) {
+  const geometry = buildGeometryFromShape(shape);
+  try {
+    return (calculateGeometryVolumeMm3(geometry) * 7.85) / 1_000_000;
+  } finally {
+    geometry.dispose?.();
+  }
+}
+
+function createGeometryInObjectSpace(shape) {
+    let geometry = buildGeometryFromShape(shape);
+    const pivot = shape.pivot ?? [0, 0, 0];
+    const scale = shape.mirrorScale ?? UNIT_SCALE;
+    const localMatrix = new THREE.Matrix4().compose(
+      new THREE.Vector3(-pivot[0] * scale[0], -pivot[1] * scale[1], -pivot[2] * scale[2]),
+      new THREE.Quaternion(),
+      new THREE.Vector3(scale[0], scale[1], scale[2]),
+    );
+    geometry.applyMatrix4(localMatrix);
+    if (localMatrix.determinant() < 0) {
+      const expandedGeometry = geometry.index ? geometry.toNonIndexed() : geometry;
+      if (expandedGeometry !== geometry) geometry.dispose();
+      geometry = expandedGeometry;
+      const position = geometry.getAttribute('position');
+      for (let i = 0; i < position.count; i += 3) {
+        for (let axis = 0; axis < 3; axis++) {
+          const second = position.getComponent(i + 1, axis);
+          position.setComponent(i + 1, axis, position.getComponent(i + 2, axis));
+          position.setComponent(i + 2, axis, second);
+        }
+      }
+      geometry.clearGroups();
+      geometry.computeVertexNormals();
+    }
+    geometry.computeBoundingBox();
+    return geometry;
+}
+
+function getPoseMatrix(shape) {
+  const position = shape.position ?? ZERO_VEC3;
+  const rotation = shape.rotation ?? ZERO_VEC3;
+  return new THREE.Matrix4().compose(
+    new THREE.Vector3(position[0], position[1], position[2]),
+    new THREE.Quaternion().setFromEuler(
+      new THREE.Euler(rotation[0], rotation[1], rotation[2], 'XYZ'),
+    ),
+    new THREE.Vector3(1, 1, 1),
+  );
+}
+
+const WELD_EPS = 1e-6;
+
+function getWorldTriangles(shape) {
+  const geometry = createGeometryInObjectSpace(shape);
+  try {
+    const matrix = getPoseMatrix(shape);
+    const position = geometry.getAttribute('position');
+    const index = geometry.index;
+    const count = index ? index.count : position.count;
+    const triangles = [];
+    for (let i = 0; i < count; i += 3) {
+      const tri = [0, 1, 2].map((k) =>
+        new THREE.Vector3().fromBufferAttribute(position, index ? index.getX(i + k) : i + k).applyMatrix4(matrix),
+      );
+      const box = new THREE.Box3().setFromPoints(tri).expandByScalar(0.01);
+      const normal = new THREE.Vector3()
+        .crossVectors(new THREE.Vector3().subVectors(tri[1], tri[0]), new THREE.Vector3().subVectors(tri[2], tri[0]))
+        .normalize();
+      triangles.push({ tri, box, normal });
+    }
+
+    // 内側のR面(凹んだ滑らかな曲面)は溶接できないので印を付ける
+    const vkey = (v) => `${Math.round(v.x * 100)}_${Math.round(v.y * 100)}_${Math.round(v.z * 100)}`;
+    const edgeMap = new Map();
+    triangles.forEach((t, ti) => {
+      for (let k = 0; k < 3; k++) {
+        const ka = vkey(t.tri[k]);
+        const kb = vkey(t.tri[(k + 1) % 3]);
+        const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+        const list = edgeMap.get(key);
+        if (list) list.push(ti);
+        else edgeMap.set(key, [ti]);
+      }
+    });
+    const centroid = (t) => t.tri[0].clone().add(t.tri[1]).add(t.tri[2]).multiplyScalar(1 / 3);
+    for (const list of edgeMap.values()) {
+      if (list.length !== 2) continue;
+      const t1 = triangles[list[0]];
+      const t2 = triangles[list[1]];
+      const dot = t1.normal.dot(t2.normal);
+      if (dot > 1 - 1e-4 || dot < Math.cos(Math.PI / 3)) continue;
+      const c1 = centroid(t1);
+      const c2 = centroid(t2);
+      const concave = c2.sub(c1).dot(t1.normal) > 0;
+      if (concave) {
+        t1.smoothCount = (t1.smoothCount ?? 0) + 1;
+        t2.smoothCount = (t2.smoothCount ?? 0) + 1;
+      }
+    }
+    // 曲面の途中の面は両側に滑らかな凹み接続を持つ。平らな壁(片側のみ)は含めない
+    for (const t of triangles) if ((t.smoothCount ?? 0) >= 2) t.innerR = true;
+    return { triangles, box: new THREE.Box3().setFromPoints(triangles.flatMap((t) => t.tri)) };
+  } finally {
+    geometry.dispose();
+  }
+}
+
+function edgeTriangleHit(a, b, tri) {
+  const [p0, p1, p2] = tri;
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const e1 = new THREE.Vector3().subVectors(p1, p0);
+  const e2 = new THREE.Vector3().subVectors(p2, p0);
+  const h = new THREE.Vector3().crossVectors(dir, e2);
+  const det = e1.dot(h);
+  if (Math.abs(det) < WELD_EPS) return null;
+  const f = 1 / det;
+  const s = new THREE.Vector3().subVectors(a, p0);
+  const u = f * s.dot(h);
+  if (u < -WELD_EPS || u > 1 + WELD_EPS) return null;
+  const q = new THREE.Vector3().crossVectors(s, e1);
+  const v = f * dir.dot(q);
+  if (v < -WELD_EPS || u + v > 1 + WELD_EPS) return null;
+  const t = f * e2.dot(q);
+  if (t < -WELD_EPS || t > 1 + WELD_EPS) return null;
+  return a.clone().addScaledVector(dir, t);
+}
+
+function triangleIntersectionSegment(t1, t2) {
+  const hits = [];
+  for (let k = 0; k < 3; k++) {
+    const h1 = edgeTriangleHit(t1[k], t1[(k + 1) % 3], t2);
+    if (h1) hits.push(h1);
+    const h2 = edgeTriangleHit(t2[k], t2[(k + 1) % 3], t1);
+    if (h2) hits.push(h2);
+  }
+  if (hits.length < 2) return null;
+  let best = null;
+  let bestLen = 0;
+  for (let i = 0; i < hits.length; i++) {
+    for (let j = i + 1; j < hits.length; j++) {
+      const len = hits[i].distanceToSquared(hits[j]);
+      if (len > bestLen) {
+        bestLen = len;
+        best = [hits[i], hits[j]];
+      }
+    }
+  }
+  return bestLen > 1e-6 ? best : null;
+}
+
+// 同一直線上で重なる/連続する線分を結合し、重複分の長さを二重計上しない
+function mergeCollinearSegments(segments) {
+  const groups = new Map();
+  for (const [a, b] of segments) {
+    const A = new THREE.Vector3(...a);
+    const B = new THREE.Vector3(...b);
+    const d = new THREE.Vector3().subVectors(B, A);
+    if (d.lengthSq() < 1e-12) continue;
+    d.normalize();
+    const flip = d.x < -1e-6 || (Math.abs(d.x) <= 1e-6 && (d.y < -1e-6 || (Math.abs(d.y) <= 1e-6 && d.z < 0)));
+    if (flip) d.negate();
+    const p0 = A.clone().addScaledVector(d, -A.dot(d));
+    const key = [d.x * 1e3, d.y * 1e3, d.z * 1e3, p0.x * 20, p0.y * 20, p0.z * 20]
+      .map((v) => Math.round(v) + 0)
+      .join('_');
+    let g = groups.get(key);
+    if (!g) {
+      g = { d, p0, ranges: [] };
+      groups.set(key, g);
+    }
+    const t1 = A.dot(d);
+    const t2 = B.dot(d);
+    g.ranges.push([Math.min(t1, t2), Math.max(t1, t2)]);
+  }
+
+  const merged = [];
+  let totalLengthMm = 0;
+  for (const { d, p0, ranges } of groups.values()) {
+    ranges.sort((x, y) => x[0] - y[0]);
+    let [s, e] = ranges[0];
+    const flush = () => {
+      if (e - s < 1e-6) return;
+      merged.push([p0.clone().addScaledVector(d, s).toArray(), p0.clone().addScaledVector(d, e).toArray()]);
+      totalLengthMm += e - s;
+    };
+    for (let i = 1; i < ranges.length; i++) {
+      if (ranges[i][0] <= e + 1e-3) e = Math.max(e, ranges[i][1]);
+      else {
+        flush();
+        [s, e] = ranges[i];
+      }
+    }
+    flush();
+  }
+  return { segments: merged, totalLengthMm };
+}
+
+const COPLANAR_DIST_MM = 0.5;
+const NEAR_PARALLEL_COS = Math.cos((35 * Math.PI) / 180);
+
+// 凸多角形(CCW)を三角形(CCW)でクリップする(2D, Sutherland-Hodgman)
+function clipPolygonByTriangle(poly, tri2d) {
+  let out = poly;
+  for (let k = 0; k < 3 && out.length; k++) {
+    const p = tri2d[k];
+    const q = tri2d[(k + 1) % 3];
+    const side = (pt) => (q[0] - p[0]) * (pt[1] - p[1]) - (q[1] - p[1]) * (pt[0] - p[0]);
+    const input = out;
+    out = [];
+    for (let i = 0; i < input.length; i++) {
+      const cur = input[i];
+      const prev = input[(i + input.length - 1) % input.length];
+      const sc = side(cur);
+      const sp = side(prev);
+      if (sc >= 0) {
+        if (sp < 0) {
+          const t = sp / (sp - sc);
+          out.push([prev[0] + (cur[0] - prev[0]) * t, prev[1] + (cur[1] - prev[1]) * t]);
+        }
+        out.push(cur);
+      } else if (sp >= 0) {
+        const t = sp / (sp - sc);
+        out.push([prev[0] + (cur[0] - prev[0]) * t, prev[1] + (cur[1] - prev[1]) * t]);
+      }
+    }
+  }
+  return out;
+}
+
+// 同一平面で向かい合う2三角形の接触領域(多角形)の辺を、向き付きで返す
+function coplanarContactEdges(ta, tb) {
+  const n = ta.normal;
+  const u = new THREE.Vector3().subVectors(ta.tri[1], ta.tri[0]).normalize();
+  const v = new THREE.Vector3().crossVectors(n, u);
+  const origin = ta.tri[0];
+  const to2d = (p) => {
+    const d = new THREE.Vector3().subVectors(p, origin);
+    return [d.dot(u), d.dot(v)];
+  };
+  const a2 = ta.tri.map(to2d);
+  let b2 = tb.tri.map(to2d);
+  const area = (b2[1][0] - b2[0][0]) * (b2[2][1] - b2[0][1]) - (b2[1][1] - b2[0][1]) * (b2[2][0] - b2[0][0]);
+  if (area < 0) b2 = [b2[0], b2[2], b2[1]];
+  const poly = clipPolygonByTriangle(a2, b2);
+  if (poly.length < 3) return [];
+  let polyArea = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i];
+    const q = poly[(i + 1) % poly.length];
+    polyArea += p[0] * q[1] - q[0] * p[1];
+  }
+  if (Math.abs(polyArea) / 2 < 1e-3) return [];
+  const to3d = (p) => origin.clone().addScaledVector(u, p[0]).addScaledVector(v, p[1]);
+  const edges = [];
+  for (let i = 0; i < poly.length; i++) {
+    edges.push([to3d(poly[i]), to3d(poly[(i + 1) % poly.length])]);
+  }
+  return edges;
+}
+
+// 向き付き辺を同一直線上でまとめ、隣接多角形の内部辺(逆向き)を相殺して外形だけ残す
+function netOutlineSegments(edges) {
+  const groups = [];
+  for (const [A, B] of edges) {
+    const d = new THREE.Vector3().subVectors(B, A);
+    if (d.lengthSq() < 1e-10) continue;
+    d.normalize();
+    // 方向と位置が許容内で一致する直線を同一とみなす(丸め境界による取りこぼし防止)
+    let g = groups.find((x) => {
+      if (Math.abs(x.d.dot(d)) < 1 - 1e-6) return false;
+      const rel = new THREE.Vector3().subVectors(A, x.o);
+      return rel.addScaledVector(x.d, -rel.dot(x.d)).lengthSq() < 0.05 * 0.05;
+    });
+    if (!g) {
+      g = { d: d.clone(), o: A.clone(), events: [] };
+      groups.push(g);
+    }
+    const ta = new THREE.Vector3().subVectors(A, g.o).dot(g.d);
+    const tb = new THREE.Vector3().subVectors(B, g.o).dot(g.d);
+    const sign = tb > ta ? 1 : -1;
+    g.events.push([Math.min(ta, tb), sign], [Math.max(ta, tb), -sign]);
+  }
+
+  const out = [];
+  for (const { d, o, events } of groups) {
+    events.sort((x, y) => x[0] - y[0]);
+    let acc = 0;
+    let start = null;
+    let i = 0;
+    while (i < events.length) {
+      const t = events[i][0];
+      while (i < events.length && events[i][0] - t < 0.05) {
+        acc += events[i][1];
+        i++;
+      }
+      const active = Math.abs(acc) > 0.5;
+      if (active && start === null) start = t;
+      if (!active && start !== null) {
+        if (t - start > 1e-3) {
+          out.push([o.clone().addScaledVector(d, start).toArray(), o.clone().addScaledVector(d, t).toArray()]);
+        }
+        start = null;
+      }
+    }
+  }
+  return out;
+}
+
+// 図形同士が交差する線と、面が接している領域の外形を溶接線として返す
+export function computeWeldLines(shapes) {
+  const worlds = shapes.map((shape) => ({ id: shape.id, ...getWorldTriangles(shape) }));
+  const all = [];
+
+  for (let i = 0; i < worlds.length; i++) {
+    for (let j = i + 1; j < worlds.length; j++) {
+      const a = worlds[i];
+      const b = worlds[j];
+      if (!a.box.clone().expandByScalar(0.01).intersectsBox(b.box)) continue;
+      const candidatesB = b.triangles.filter((t) => t.box.intersectsBox(a.box));
+      const crossing = [];
+      const contactEdges = [];
+      const contactPairs = [];
+      for (const ta of a.triangles) {
+        if (!ta.box.intersectsBox(b.box)) continue;
+        for (const tb of candidatesB) {
+          if (!ta.box.intersectsBox(tb.box)) continue;
+          const dot = ta.normal.dot(tb.normal);
+          // ほぼ平行な面(曲面の分割面を含む)は交差線ではなく接触として扱う
+          if (Math.abs(dot) > NEAR_PARALLEL_COS) {
+            if (dot < 0) {
+              const planeDist = (from, to) =>
+                Math.max(...to.tri.map((p) => Math.abs(from.normal.dot(new THREE.Vector3().subVectors(p, from.tri[0])))));
+              if (planeDist(ta, tb) < COPLANAR_DIST_MM && planeDist(tb, ta) < COPLANAR_DIST_MM) {
+                const edges = coplanarContactEdges(ta, tb);
+                if (edges.length) {
+                  contactEdges.push(...edges);
+                  contactPairs.push({ ta, tb, taTri: new THREE.Triangle(...ta.tri), tbTri: new THREE.Triangle(...tb.tri) });
+                }
+              }
+            }
+            continue;
+          }
+          const seg = triangleIntersectionSegment(ta.tri, tb.tri);
+          if (seg && !ta.innerR && !tb.innerR) crossing.push([seg[0].toArray(), seg[1].toArray()]);
+        }
+      }
+      const innerR = [...a.triangles, ...b.triangles].filter((t) => t.innerR);
+      const onInnerR = (seg) => {
+        const mid = new THREE.Vector3(
+          (seg[0][0] + seg[1][0]) / 2,
+          (seg[0][1] + seg[1][1]) / 2,
+          (seg[0][2] + seg[1][2]) / 2,
+        );
+        const tmp = new THREE.Vector3();
+        return innerR.some((t) => {
+          if (!t.box.containsPoint(mid)) return false;
+          return new THREE.Triangle(...t.tri).closestPointToPoint(mid, tmp).distanceTo(mid) < 0.05;
+        });
+      };
+      // 接触領域の境界だけを溶接する。線の片側だけが接触領域なら外形、両側または無接触なら内部/ノイズ
+      const probe = new THREE.Vector3();
+      const tmp = new THREE.Vector3();
+      const inContact = (pt) =>
+        contactPairs.some(
+          (p) =>
+            p.ta.box.containsPoint(pt) &&
+            p.taTri.closestPointToPoint(pt, tmp).distanceTo(pt) < 0.15 &&
+            p.tbTri.closestPointToPoint(pt, tmp).distanceTo(pt) < COPLANAR_DIST_MM + 0.1,
+        );
+      const isInteriorOfContact = (seg) => {
+        const A0 = new THREE.Vector3(...seg[0]);
+        const B0 = new THREE.Vector3(...seg[1]);
+        const mid = A0.clone().add(B0).multiplyScalar(0.5);
+        const dir = B0.clone().sub(A0).normalize();
+        let near = null;
+        let best = Infinity;
+        for (const p of contactPairs) {
+          const d = p.taTri.closestPointToPoint(mid, tmp).distanceTo(mid);
+          if (d < best) {
+            best = d;
+            near = p;
+          }
+        }
+        if (!near || best > 0.3) return false;
+        const side = new THREE.Vector3().crossVectors(near.ta.normal, dir).normalize();
+        const off = 0.1;
+        const plus = inContact(probe.copy(mid).addScaledVector(side, off));
+        const minus = inContact(probe.copy(mid).addScaledVector(side, -off));
+        return plus === minus;
+      };
+      all.push(
+        ...crossing,
+        ...netOutlineSegments(contactEdges).filter((seg) => !onInnerR(seg) && !isInteriorOfContact(seg)),
+      );
+    }
+  }
+  return mergeCollinearSegments(all);
+}
+
+export function subtractShapeGeometry(targetShape, cutterShapes) {
+  const createMesh = (shape, geometry) => {
+    const mesh = new THREE.Mesh(geometry);
+    mesh.matrixAutoUpdate = false;
+    mesh.matrix.copy(getPoseMatrix(shape));
+    mesh.updateMatrixWorld(true);
+    return mesh;
+  };
+
+  const targetGeometry = createGeometryInObjectSpace(targetShape);
+  const targetMatrix = getPoseMatrix(targetShape);
+  const targetBounds = targetGeometry.boundingBox.clone().applyMatrix4(targetMatrix);
+  let result;
+  let intersectionCount = 0;
+  const temporaryGeometries = [targetGeometry];
+
+  try {
+    result = CSG.fromMesh(createMesh(targetShape, targetGeometry));
+
+    for (const cutterShape of cutterShapes) {
+      const cutterGeometry = createGeometryInObjectSpace(cutterShape);
+      temporaryGeometries.push(cutterGeometry);
+      const cutterBounds = cutterGeometry.boundingBox.clone().applyMatrix4(getPoseMatrix(cutterShape));
+      if (!targetBounds.intersectsBox(cutterBounds)) continue;
+
+      result = result.subtract(CSG.fromMesh(createMesh(cutterShape, cutterGeometry)));
+      intersectionCount += 1;
+    }
+
+    if (intersectionCount === 0) return { meshData: null };
+
+    const resultGeometry = result.toGeometry(targetMatrix);
+    try {
+      const exportGeometry = resultGeometry.index ? resultGeometry.toNonIndexed() : resultGeometry;
+      try {
+        const position = exportGeometry.getAttribute('position');
+        if (!position || position.count % 3 !== 0) {
+          throw new Error('CSG subtraction returned invalid mesh geometry');
+        }
+        const beforeVolume = calculateGeometryVolumeMm3(targetGeometry);
+        const afterVolume = calculateGeometryVolumeMm3(exportGeometry);
+        if (Math.abs(beforeVolume - afterVolume) <= Math.max(1, beforeVolume) * 1e-8) {
+          return { meshData: null };
+        }
+        return { meshData: { positions: Array.from(position.array) } };
+      } finally {
+        if (exportGeometry !== resultGeometry) exportGeometry.dispose();
+      }
+    } finally {
+      resultGeometry.dispose();
+    }
+  } finally {
+    temporaryGeometries.forEach((geometry) => geometry.dispose());
+  }
+}
+
 function uniqueVec3(list, eps = 1e-4) {
   const map = new Map();
   for (const v of list) {
@@ -425,30 +1022,50 @@ function uniqueVec3(list, eps = 1e-4) {
   return Array.from(map.values());
 }
 
-function computeSnapPoints(obj) {
+const snapPointCache = new WeakMap();
+
+function computeSnapPoints(obj, { includeMidpoints = true } = {}) {
+  const cached = snapPointCache.get(obj);
+  if (cached && (!includeMidpoints || cached.hasMidpoints)) return cached;
+
   const geo = buildGeometryFromShape(obj);
+  try {
+    const posAttr = geo.getAttribute('position');
+    const mirrorScale = obj.mirrorScale ?? UNIT_SCALE;
+    const verts = [];
+    for (let i = 0; i < posAttr.count; i++) {
+      verts.push(new THREE.Vector3(
+        posAttr.getX(i) * mirrorScale[0],
+        posAttr.getY(i) * mirrorScale[1],
+        posAttr.getZ(i) * mirrorScale[2],
+      ));
+    }
+    const vertices = uniqueVec3(verts);
 
-  const posAttr = geo.getAttribute('position');
-  const verts = [];
-  for (let i = 0; i < posAttr.count; i++) {
-    verts.push(new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i)));
+    if (!includeMidpoints) {
+      const points = { vertices, midpoints: [], hasMidpoints: false };
+      snapPointCache.set(obj, points);
+      return points;
+    }
+
+    const edges = new THREE.EdgesGeometry(geo);
+    try {
+      const ePos = edges.getAttribute('position');
+      const mids = [];
+      for (let i = 0; i < ePos.count; i += 2) {
+        const a = new THREE.Vector3(ePos.getX(i), ePos.getY(i), ePos.getZ(i));
+        const b = new THREE.Vector3(ePos.getX(i + 1), ePos.getY(i + 1), ePos.getZ(i + 1));
+        mids.push(a.add(b).multiplyScalar(0.5));
+      }
+      const points = { vertices, midpoints: uniqueVec3(mids), hasMidpoints: true };
+      snapPointCache.set(obj, points);
+      return points;
+    } finally {
+      edges.dispose?.();
+    }
+  } finally {
+    geo.dispose?.();
   }
-  const vertices = uniqueVec3(verts);
-
-  const edges = new THREE.EdgesGeometry(geo);
-  const ePos = edges.getAttribute('position');
-  const mids = [];
-  for (let i = 0; i < ePos.count; i += 2) {
-    const a = new THREE.Vector3(ePos.getX(i), ePos.getY(i), ePos.getZ(i));
-    const b = new THREE.Vector3(ePos.getX(i + 1), ePos.getY(i + 1), ePos.getZ(i + 1));
-    mids.push(a.add(b).multiplyScalar(0.5));
-  }
-  const midpoints = uniqueVec3(mids);
-
-  geo.dispose?.();
-  edges.dispose?.();
-
-  return { vertices, midpoints };
 }
 
 function nearestPoint(target, points) {
@@ -550,7 +1167,12 @@ function FusedBody({
   blockPointer = false,
 }) {
   const pivot = obj.pivot ?? [0, 0, 0];
-  const fusedMeshOffset = [-pivot[0], -pivot[1], -pivot[2]];
+  const mirrorScale = obj.mirrorScale ?? UNIT_SCALE;
+  const fusedMeshOffset = [
+    -pivot[0] * mirrorScale[0],
+    -pivot[1] * mirrorScale[1],
+    -pivot[2] * mirrorScale[2],
+  ];
 
   const outlineColorSelected = isPrimary ? '#ff8a00' : '#ffb020';
   const outlineColorHover = isOrangeLike(obj.color ?? '#bfbfbf') ? '#2f6bff' : '#ffb020';
@@ -602,7 +1224,7 @@ function FusedBody({
   const fallbackColor = obj.color ?? '#bfbfbf';
 
   return (
-    <group position={fusedMeshOffset}>
+    <group position={fusedMeshOffset} scale={mirrorScale}>
       {sources.map((s, i) => {
         const g = buildGeometryFromShape(s);
         const rp = s.localPosition ?? [0, 0, 0];
@@ -668,6 +1290,7 @@ function MeshBody({
   extrudeMode,
   blockPointer = false,
 }) {
+  const geometry = useMemo(() => buildGeometryFromShape(obj), [obj]);
   const color = obj.color ?? '#bfbfbf';
 
   const outlineColorSelected = isPrimary ? '#ff8a00' : '#ffb020';
@@ -676,7 +1299,12 @@ function MeshBody({
   const outlineColor = selected ? outlineColorSelected : outlineColorHover;
 
   const pivot = obj.pivot ?? [0, 0, 0];
-  const meshOffset = [-pivot[0], -pivot[1], -pivot[2]];
+  const mirrorScale = obj.mirrorScale ?? [1, 1, 1];
+  const meshOffset = [
+    -pivot[0] * mirrorScale[0],
+    -pivot[1] * mirrorScale[1],
+    -pivot[2] * mirrorScale[2],
+  ];
 
   const Mat = (
     <meshStandardMaterial
@@ -685,6 +1313,7 @@ function MeshBody({
       transparent={transparentMode}
       opacity={transparentMode ? 0.35 : 1}
       depthWrite={!transparentMode}
+      side={obj.type === 'mesh' ? THREE.DoubleSide : THREE.FrontSide}
     />
   );
 
@@ -730,8 +1359,10 @@ function MeshBody({
 
   const common = {
     position: meshOffset,
-    castShadow: !!showShadows,
-    receiveShadow: !!showShadows,
+    scale: mirrorScale,
+    castShadow: !!showShadows && obj.type !== 'mesh',
+    // 被り除去後のメッシュは自己影(シャドウアクネ)が出るため影を受けない
+    receiveShadow: !!showShadows && obj.type !== 'mesh',
     onPointerDown: handlePointerDown,
     onPointerOver: handleOver,
     onPointerOut: handleOut,
@@ -750,12 +1381,12 @@ function MeshBody({
     obj.type === 'steel-squarepipe' ||
     obj.type === 'steel-expanded' ||
     obj.type === 'steel-checkered' ||
+    obj.type === 'mesh' ||
     obj.type === 'sketch-extrude' ||
     obj.type === 'plate'
   ) {
-    const geo = buildGeometryFromShape(obj);
     return (
-      <mesh {...common} geometry={geo}>
+      <mesh {...common} geometry={geometry}>
         {Mat}
         {showOutline ? <Outlines thickness={3} color={outlineColor} /> : null}
       </mesh>
@@ -815,6 +1446,24 @@ function centroidOfSelected(objects, selectedIds) {
   return [sx / pts.length, sy / pts.length, sz / pts.length];
 }
 
+function WeldLines({ segments }) {
+  const geometry = useMemo(() => {
+    if (!segments?.length) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(segments.flat(2), 3));
+    return g;
+  }, [segments]);
+
+  useEffect(() => () => geometry?.dispose(), [geometry]);
+
+  if (!geometry) return null;
+  return (
+    <lineSegments geometry={geometry} renderOrder={999} raycast={() => null}>
+      <lineBasicMaterial color="#ff0000" depthTest={false} transparent />
+    </lineSegments>
+  );
+}
+
 export default function EditorCanvas({
   objects = [],
   selectedIds = [],
@@ -841,9 +1490,11 @@ export default function EditorCanvas({
   showShadows = true,
   showGrid = true,
   transparentMode = false,
+  weldSegments = null,
 
   sketchMode,
   onSketchModeChange,
+
   sketchEntities,
   onSketchEntitiesChange,
 
@@ -950,8 +1601,16 @@ useEffect(() => {
     return computeSnapPoints(primaryObj);
   }, [primaryObj]);
 
-  const pivot = primaryObj?.pivot ?? [0, 0, 0];
-  const pivotVec = useMemo(() => new THREE.Vector3(pivot[0], pivot[1], pivot[2]), [pivot]);
+  const pivot = primaryObj?.pivot ?? ZERO_VEC3;
+  const primaryMirrorScale = primaryObj?.mirrorScale ?? UNIT_SCALE;
+  const pivotVec = useMemo(
+    () => new THREE.Vector3(
+      pivot[0] * primaryMirrorScale[0],
+      pivot[1] * primaryMirrorScale[1],
+      pivot[2] * primaryMirrorScale[2],
+    ),
+    [pivot, primaryMirrorScale],
+  );
 
   const verticesGroup = useMemo(() => snap.vertices.map((v) => v.clone().sub(pivotVec)), [snap.vertices, pivotVec]);
   const midpointsGroup = useMemo(() => snap.midpoints.map((v) => v.clone().sub(pivotVec)), [snap.midpoints, pivotVec]);
@@ -1144,25 +1803,38 @@ function isPickedPoint(objId, kind, p) {
 
   const panCenter = useMemo(() => centroidOfSelected(drawable, selectedIds), [drawable, selectedIds]);
 
+  const panCx = panCenter[0];
+  const panCy = panCenter[1];
+  const panCz = panCenter[2];
+  const selectedKey = selectedIds.join('|');
+
   useEffect(() => {
     if (currentTool !== 'pan') return;
-    panStartPosRef.current = new THREE.Vector3(panCenter[0], panCenter[1], panCenter[2]);
-    if (panRef.current) panRef.current.position.set(panCenter[0], panCenter[1], panCenter[2]);
-  }, [currentTool, panCenter[0], panCenter[1], panCenter[2], selectedIds.join('|')]);
+    panStartPosRef.current = new THREE.Vector3(panCx, panCy, panCz);
+    if (panRef.current) panRef.current.position.set(panCx, panCy, panCz);
+  }, [currentTool, panCx, panCy, panCz, selectedKey]);
 
   const showPanGizmo = currentTool === 'pan' && selectedIds.length > 0;
 
   // ✅ スケッチ用 3Dスナップ候補（面上の頂点/中点だけ）
+  const sketchStep = sketchMode?.step;
+  const sketchObjId = sketchMode?.objId;
+  const sketchFrame = sketchMode?.frame;
   const sketchSnapWorldCandidates = useMemo(() => {
-    if (!(currentTool === 'sketch2d' && sketchMode?.step === 'drawing' && sketchMode?.frame && sketchMode?.objId)) return [];
+    if (!(currentTool === 'sketch2d' && sketchStep === 'drawing' && sketchFrame && sketchObjId)) return [];
 
-    const obj = drawable.find((o) => o.id === sketchMode.objId);
+    const obj = drawable.find((o) => o.id === sketchObjId);
     if (!obj) return [];
 
     const { vertices, midpoints } = computeSnapPoints(obj);
 
     const pv = obj.pivot ?? [0, 0, 0];
-    const pivotV = new THREE.Vector3(pv[0] ?? 0, pv[1] ?? 0, pv[2] ?? 0);
+    const mirrorScale = obj.mirrorScale ?? UNIT_SCALE;
+    const pivotV = new THREE.Vector3(
+      (pv[0] ?? 0) * mirrorScale[0],
+      (pv[1] ?? 0) * mirrorScale[1],
+      (pv[2] ?? 0) * mirrorScale[2],
+    );
 
     const p = obj.position ?? [0, 0, 0];
     const posV = new THREE.Vector3(p[0] ?? 0, p[1] ?? 0, p[2] ?? 0);
@@ -1170,7 +1842,7 @@ function isPickedPoint(objId, kind, p) {
     const r = obj.rotation ?? [0, 0, 0];
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(r[0] ?? 0, r[1] ?? 0, r[2] ?? 0));
 
-    const fr = sketchMode.frame;
+    const fr = sketchFrame;
     const oV = new THREE.Vector3(fr.origin[0], fr.origin[1], fr.origin[2]);
     const nV = new THREE.Vector3(fr.normal[0], fr.normal[1], fr.normal[2]).normalize();
     const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(nV, oV);
@@ -1199,7 +1871,7 @@ function isPickedPoint(objId, kind, p) {
     }
 
     return out;
-  }, [currentTool, sketchMode?.step, sketchMode?.objId, sketchMode?.frame, drawable]);
+  }, [currentTool, sketchStep, sketchObjId, sketchFrame, drawable]);
 
   return (
     <Canvas
@@ -1229,9 +1901,10 @@ function isPickedPoint(objId, kind, p) {
 
     >
       <ambientLight intensity={0.65} />
-      <directionalLight position={[8000, 10000, 6000]} intensity={1.0} castShadow={!!showShadows} />
+      <directionalLight position={[8000, 10000, 6000]} intensity={1.0} castShadow={!!showShadows} shadow-bias={-0.0005} shadow-normalBias={2} />
 
       {showGrid ? <Grid infiniteGrid cellSize={100} sectionSize={1000} fadeDistance={70000} /> : null}
+      <WeldLines segments={weldSegments} />
 
       {showShadows ? (
         <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
@@ -1307,10 +1980,16 @@ function isPickedPoint(objId, kind, p) {
         // ✅ ここが重要：vertex-move でも頂点モード表示する
         if (!mobileViewMode && (currentTool === 'select' || isVertexMove) && selectMode === 'vertex') {
   // ✅ 各オブジェクトのスナップ点を計算して表示（vertex-move のターゲットに使う）
-  const sp = computeSnapPoints(o);
+  const isSteelAddedObject = o.steelAdded === true || o.type?.startsWith('steel-');
+  const sp = computeSnapPoints(o, { includeMidpoints: !isSteelAddedObject });
 
   const pv = o.pivot ?? [0, 0, 0];
-  const pivotV = new THREE.Vector3(pv[0] ?? 0, pv[1] ?? 0, pv[2] ?? 0);
+  const mirrorScale = o.mirrorScale ?? UNIT_SCALE;
+  const pivotV = new THREE.Vector3(
+    (pv[0] ?? 0) * mirrorScale[0],
+    (pv[1] ?? 0) * mirrorScale[1],
+    (pv[2] ?? 0) * mirrorScale[2],
+  );
 
   const vtxG = sp.vertices.map((v) => v.clone().sub(pivotV));
   const midG = sp.midpoints.map((v) => v.clone().sub(pivotV));
@@ -1367,7 +2046,7 @@ function isPickedPoint(objId, kind, p) {
         />
       ))}
 
-      {midG.map((p, idx) => (
+      {!isSteelAddedObject ? midG.map((p, idx) => (
         <SnapDot
           key={`${o.id}_m_${idx}`}
           position={[p.x, p.y, p.z]}
@@ -1376,7 +2055,7 @@ function isPickedPoint(objId, kind, p) {
           onLeftClick={() => handleSnapMoveClick(o.id, 'mid', p)}
           selected={isPickedPoint(o.id, 'mid', p)}
         />
-      ))}
+      )) : null}
 
       {/* ✅ pivot操作ハンドルは primary だけ */}
       {isPrimary ? (

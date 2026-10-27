@@ -231,11 +231,14 @@ export default function SketchOverlay({
   const [hover2D, setHover2D] = useState(null);
   const [snapHover, setSnapHover] = useState(null);
 
-  useEffect(() => {
+  const frameKey = `${frame?.origin?.join?.(',')}|${frame?.normal?.join?.(',')}|${tool}|${mode}`;
+  const [prevFrameKey, setPrevFrameKey] = useState(frameKey);
+  if (prevFrameKey !== frameKey) {
+    setPrevFrameKey(frameKey);
     setTemp(null);
     setHover2D(null);
     setSnapHover(null);
-  }, [tool, frame?.origin?.join?.(','), frame?.normal?.join?.(','), mode]);
+  }
 
   useEffect(() => {
     const onKey = (e) => {
@@ -290,6 +293,27 @@ export default function SketchOverlay({
     const step = Math.max(1, Math.floor(allSnapCandidates.length / MAX));
     return allSnapCandidates.filter((_, i) => i % step === 0);
   }, [allSnapCandidates]);
+
+  const preview = useMemo(() => {
+    if (!temp || temp.kind !== 'line' || !hover2D) return null;
+
+    const a2 = { x: temp.a[0], y: temp.a[1] };
+    const rawB2 = { x: hover2D.x, y: hover2D.y };
+
+    return computeLineEnd(a2, rawB2, {
+      lengthMm: constraintParsed.lengthMm,
+      angleDeg: constraintParsed.angleDeg,
+      snapTolDeg: 4,
+    });
+  }, [temp, hover2D, constraintParsed.lengthMm, constraintParsed.angleDeg]);
+
+  const previewWorld = useMemo(() => {
+    if (!preview || !temp || temp.kind !== 'line') return null;
+    const a = sketch2DToWorld(frame, temp.a[0], temp.a[1]);
+    const b = sketch2DToWorld(frame, preview.b2.x, preview.b2.y);
+    const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+    return { a, b, mid };
+  }, [preview, temp, frame]);
 
   if (!frame || !basis) return null;
 
@@ -380,27 +404,6 @@ export default function SketchOverlay({
       }
     }
   };
-
-  const preview = useMemo(() => {
-    if (!temp || temp.kind !== 'line' || !hover2D) return null;
-
-    const a2 = { x: temp.a[0], y: temp.a[1] };
-    const rawB2 = { x: hover2D.x, y: hover2D.y };
-
-    return computeLineEnd(a2, rawB2, {
-      lengthMm: constraintParsed.lengthMm,
-      angleDeg: constraintParsed.angleDeg,
-      snapTolDeg: 4,
-    });
-  }, [temp, hover2D, constraintParsed.lengthMm, constraintParsed.angleDeg]);
-
-  const previewWorld = useMemo(() => {
-    if (!preview || !temp || temp.kind !== 'line') return null;
-    const a = sketch2DToWorld(frame, temp.a[0], temp.a[1]);
-    const b = sketch2DToWorld(frame, preview.b2.x, preview.b2.y);
-    const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
-    return { a, b, mid };
-  }, [preview, temp, frame]);
 
   function markerRadius(kind) {
     if (kind === 'vtx') return 5;

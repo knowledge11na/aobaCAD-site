@@ -3,6 +3,27 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+function Btn({ active, onClick, children, title, disabled }) {
+  return (
+    <button
+      className={[
+        'border px-2 py-1 text-xs transition',
+        'hover:bg-gray-50',
+        active ? 'bg-orange-500 text-white border-orange-600 ring-2 ring-orange-300' : 'bg-white',
+        disabled ? 'opacity-40 cursor-not-allowed' : '',
+      ].join(' ')}
+      onClick={() => {
+        if (disabled) return;
+        onClick?.();
+      }}
+      title={title}
+      type="button"
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function EditorToolbar({
   currentTool,
   setTool,
@@ -48,12 +69,20 @@ export default function EditorToolbar({
 
   // ✅ 追加：切板挿入
   onOpenPlateInsert,
+  totalWeightKg = 0,
+  canRemoveOverlap = false,
+  overlapMessage = '',
+  onRemoveOverlap,
+  canWeld = false,
+  onWeld,
+  weldLengthMm = null,
 
 }) {
   const [openFile, setOpenFile] = useState(false);
   const [openView, setOpenView] = useState(false);
   const [openDup, setOpenDup] = useState(false);
   const [openSettings, setOpenSettings] = useState(false);
+  const [showTotalWeight, setShowTotalWeight] = useState(false);
 
   // ✅ ツールメニュー
   const [openTools, setOpenTools] = useState(false);
@@ -75,25 +104,6 @@ export default function EditorToolbar({
     window.addEventListener('mousedown', onDown);
     return () => window.removeEventListener('mousedown', onDown);
   }, [openFile, openView, openDup, openSettings, openTools]);
-
-  const Btn = ({ active, onClick, children, title, disabled }) => (
-    <button
-      className={[
-        'border px-2 py-1 text-xs transition',
-        'hover:bg-gray-50',
-        active ? 'bg-orange-500 text-white border-orange-600 ring-2 ring-orange-300' : 'bg-white',
-        disabled ? 'opacity-40 cursor-not-allowed' : '',
-      ].join(' ')}
-      onClick={() => {
-        if (disabled) return;
-        onClick?.();
-      }}
-      title={title}
-      type="button"
-    >
-      {children}
-    </button>
-  );
 
   const isDupTool = currentTool === 'dup-translate' || currentTool === 'dup-rotate' || currentTool === 'dup-mirror';
 
@@ -274,6 +284,77 @@ export default function EditorToolbar({
         <button className="border px-2 py-1 hover:bg-gray-50" type="button">
           ヘルプ
         </button>
+
+        <div className="relative">
+          <button
+            className="border px-2 py-1 hover:bg-gray-50"
+            type="button"
+            aria-expanded={showTotalWeight}
+            onClick={() => setShowTotalWeight((visible) => !visible)}
+          >
+            重量計算
+          </button>
+          {showTotalWeight ? (
+            <div
+              className="absolute left-0 top-full z-50 mt-1 min-w-56 rounded border border-gray-300 px-3 py-2 text-xs shadow-lg"
+              style={{ backgroundColor: '#fff', opacity: 1 }}
+            >
+              <div className="text-gray-500">図面内の全オブジェクト合計</div>
+              <div className="mt-1 font-semibold" role="status" aria-live="polite">
+                {totalWeightKg.toFixed(2)} kg
+              </div>
+              <div className="mt-1 text-[10px] text-gray-500">鉄の密度: 7.85 g/cm³</div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="relative">
+          <button
+            className={`border px-2 py-1 hover:bg-gray-50 ${!canRemoveOverlap ? 'cursor-not-allowed opacity-40' : ''}`}
+            type="button"
+            disabled={!canRemoveOverlap}
+            title="選択図形から、他の図形と重なっている部分を差し引く"
+            onClick={onRemoveOverlap}
+          >
+            被り除去
+          </button>
+          {overlapMessage ? (
+            <div
+              className="absolute left-0 top-full z-50 mt-1 min-w-64 rounded border border-gray-300 px-3 py-2 text-xs shadow-lg"
+              style={{ backgroundColor: '#fff', opacity: 1 }}
+              role="status"
+              aria-live="polite"
+            >
+              {overlapMessage}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="relative">
+          <button
+            className={`border px-2 py-1 hover:bg-gray-50 ${!canWeld ? 'cursor-not-allowed opacity-40' : ''}`}
+            type="button"
+            disabled={!canWeld}
+            title="図形同士が重なっている外形を表裏溶接し、赤線で表示する"
+            onClick={onWeld}
+          >
+            溶接
+          </button>
+          {weldLengthMm !== null ? (
+            <div
+              className="absolute left-0 top-full z-50 mt-1 min-w-56 rounded border border-gray-300 px-3 py-2 text-xs shadow-lg"
+              style={{ backgroundColor: '#fff', opacity: 1 }}
+              role="status"
+              aria-live="polite"
+            >
+              {weldLengthMm > 0 ? (
+                <div className="font-semibold">溶接長: {(weldLengthMm / 1000).toFixed(3)} m</div>
+              ) : (
+                <div>重なっている外形がありません。</div>
+              )}
+            </div>
+          ) : null}
+        </div>
 
         <div className="ml-auto text-xs text-gray-600">Tool: {currentTool}</div>
       </div>

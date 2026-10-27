@@ -2,7 +2,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import EditorCanvas from '@/components/EditorCanvas';
+import EditorCanvas, { computeWeldLines, getShapeWeightKg, subtractShapeGeometry } from '@/components/EditorCanvas';
 import EditorToolbar from '@/components/EditorToolbar';
 import { fetchSteelCatalog } from '@/components/steel/steelCatalog';
 import * as THREE from 'three';
@@ -568,15 +568,19 @@ function SteelAddPanel({ catalog, draft, setDraft, onPlace, onCancel, disabled }
   );
 }
 
-function InspectorPanel({ obj, onChange, selectedCount = 1, onSetColor }) {
+function InspectorPanel({ obj, onChange, weightKg = 0, selectedCount = 1, selectedWeightKg = 0, onSetColor }) {
    const [posStr, setPosStr] = useState(['0', '0', '0']);
   const [applyAll, setApplyAll] = useState(true);
 
-  useEffect(() => {
-    if (!obj) return;
-    const p = obj.position ?? [0, 0, 0];
-    setPosStr([String(p[0] ?? 0), String(p[1] ?? 0), String(p[2] ?? 0)]);
-  }, [obj?.id, (obj?.position ?? []).join(',')]);
+  const posKey = obj ? `${obj.id}|${(obj.position ?? []).join(',')}` : '';
+  const [syncedPosKey, setSyncedPosKey] = useState(posKey);
+  if (syncedPosKey !== posKey) {
+    setSyncedPosKey(posKey);
+    if (obj) {
+      const p = obj.position ?? [0, 0, 0];
+      setPosStr([String(p[0] ?? 0), String(p[1] ?? 0), String(p[2] ?? 0)]);
+    }
+  }
 
   if (!obj) return null;
 
@@ -612,6 +616,14 @@ function InspectorPanel({ obj, onChange, selectedCount = 1, onSetColor }) {
     return (
      <div className="space-y-2 rounded-lg border p-2">
        <div className="text-xs font-semibold">選択中：{obj.name ?? obj.type}</div>
+       <div className="rounded bg-gray-50 px-2 py-1 text-xs">
+         重量（7.85 g/cm³）: <span className="font-semibold">{weightKg.toFixed(2)} kg</span>
+         {selectedCount > 1 ? (
+           <div className="mt-1 border-t pt-1">
+             選択全体: <span className="font-semibold">{selectedWeightKg.toFixed(2)} kg</span>
+           </div>
+         ) : null}
+       </div>
 
       {/* ✅ 色（ワンタッチ） */}
       <div>
@@ -865,6 +877,22 @@ const [plateInsertModal, setPlateInsertModal] = useState({ open: false });
   const [selectedIds, setSelectedIds] = useState([]);
   const [primaryId, setPrimaryId] = useState(null);
   const [hoveredId, setHoveredId] = useState(null);
+  const [overlapMessage, setOverlapMessage] = useState('');
+  const overlapMessageTimerRef = useRef(null);
+  const [weldResult, setWeldResult] = useState(null);
+
+  function showOverlapMessage(message) {
+    if (overlapMessageTimerRef.current) clearTimeout(overlapMessageTimerRef.current);
+    setOverlapMessage(message);
+    overlapMessageTimerRef.current = setTimeout(() => {
+      setOverlapMessage('');
+      overlapMessageTimerRef.current = null;
+    }, 1000);
+  }
+
+  useEffect(() => () => {
+    if (overlapMessageTimerRef.current) clearTimeout(overlapMessageTimerRef.current);
+  }, []);
 
   const containerRef = useRef(null);
   const canvasWrapRef = useRef(null);
@@ -876,6 +904,8 @@ const [plateInsertModal, setPlateInsertModal] = useState({ open: false });
   const startXRef = useRef(0);
   const startLeftRef = useRef(DEFAULT_LEFT);
   const startRightRef = useRef(DEFAULT_RIGHT);
+  const splitterDragHandlersRef = useRef(null);
+  const bodyDragStylesRef = useRef(null);
 
   const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT);
   const [rightWidth, setRightWidth] = useState(DEFAULT_RIGHT);
@@ -1328,11 +1358,21 @@ function openPlateInsert() {
       spec,
       dims,
       __geometry: objFromPanel.__geometry,
+      steelAdded: true,
       position: [0, 0, 0],
       rotation: [0, 0, 0],
       color: col,
       size,
-      pivot: defaultPivotFor(type, { size }),
+      pivot:
+        type === 'steel-channel' ||
+        type === 'steel-angle' ||
+        type === 'steel-hbeam' ||
+        type === 'steel-pipe' ||
+        type === 'steel-roundbar' ||
+        type === 'steel-flatbar' ||
+        type === 'steel-squarepipe'
+          ? [0, 0, 0]
+          : defaultPivotFor(type, { size }),
     });
 
     setSteelDraft(null);
@@ -1476,6 +1516,55 @@ function openPlateInsert() {
      if (!primaryId) return;
      updateObject(primaryId, patch);
    }
+
+    function weldOverlaps() {
+      if (weldResult && weldResult.source === objects) {
+        setWeldResult(null);
+        return;
+      }
+      if (shapes.length < 2) {
+        showOverlapMessage('溶接する図形が2つ以上必要です。');
+        return;
+      }
+      try {
+        const { segments, totalLengthMm } = computeWeldLines(shapes);
+        setWeldResult({ source: objects, segments, totalLengthMm });
+      } catch (error) {
+        showOverlapMessage(`溶接に失敗しました: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    function removeOverlap() {
+      const target = shapes.find((shape) => shape.id === primaryId);
+      if (!target) {
+        showOverlapMessage('被り除去する図形を選択してください。');
+        return;
+      }
+
+      const cutters = shapes.filter((shape) => shape.id !== target.id);
+      if (cutters.length === 0) {
+        showOverlapMessage('差し引く他の図形がありません。');
+        return;
+      }
+
+      try {
+        const result = subtractShapeGeometry(target, cutters);
+        if (!result.meshData) {
+          showOverlapMessage('他の図形と重なっている箇所はありません。');
+          return;
+        }
+
+        updateObject(target.id, {
+          type: 'mesh',
+          meshData: result.meshData,
+          pivot: [0, 0, 0],
+          mirrorScale: [1, 1, 1],
+        });
+        showOverlapMessage('被りを除去しました。');
+      } catch (error) {
+        showOverlapMessage(`被り除去に失敗しました: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
 
   function applyColorToObject(o, color) {
     if (o.type === 'fused') {
@@ -1891,36 +1980,38 @@ function openPlateInsert() {
     const shapeIds = expandSelectionToShapes(selectedIds);
     if (shapeIds.length === 0) return;
 
+    const axisIndex = ['x', 'y', 'z'].indexOf(axis);
+    if (axisIndex < 0) return;
+
+    const worldReflection = new THREE.Matrix4().makeScale(
+      axisIndex === 0 ? -1 : 1,
+      axisIndex === 1 ? -1 : 1,
+      axisIndex === 2 ? -1 : 1,
+    );
+    const localReflection = new THREE.Matrix4().makeScale(-1, 1, 1);
     const src = shapes.filter((o) => shapeIds.includes(o.id));
     const copies = src.map((o, i) => {
       const p = o.position ?? [0, 0, 0];
-      const pv = o.pivot ?? [0, 0, 0];
       const r = o.rotation ?? [0, 0, 0];
-
       const np = [p[0], p[1], p[2]];
-      const npv = [pv[0], pv[1], pv[2]];
-      const nr = [r[0] ?? 0, r[1] ?? 0, r[2] ?? 0];
+      np[axisIndex] *= -1;
 
-      if (axis === 'x') {
-        np[0] = -p[0];
-        npv[0] = -pv[0];
-        nr[1] = -nr[1];
-        nr[2] = -nr[2];
-      }
-      if (axis === 'y') {
-        np[1] = -p[1];
-        npv[1] = -pv[1];
-        nr[0] = -nr[0];
-        nr[2] = -nr[2];
-      }
-      if (axis === 'z') {
-        np[2] = -p[2];
-        npv[2] = -pv[2];
-        nr[0] = -nr[0];
-        nr[1] = -nr[1];
-      }
+      const currentRotation = new THREE.Matrix4().makeRotationFromEuler(
+        new THREE.Euler(r[0] ?? 0, r[1] ?? 0, r[2] ?? 0),
+      );
+      const mirroredRotation = worldReflection.clone().multiply(currentRotation).multiply(localReflection);
+      const quaternion = new THREE.Quaternion().setFromRotationMatrix(mirroredRotation);
+      const mirroredEuler = new THREE.Euler().setFromQuaternion(quaternion, 'XYZ');
+      const currentMirrorScale = o.mirrorScale ?? [1, 1, 1];
+      const mirrorScale = [...currentMirrorScale];
+      mirrorScale[0] *= -1;
 
-      return cloneObject(o, { position: np, pivot: npv, rotation: nr, parentGroupId: undefined }, i + 1);
+      return cloneObject(o, {
+        position: np,
+        rotation: [mirroredEuler.x, mirroredEuler.y, mirroredEuler.z],
+        mirrorScale,
+        parentGroupId: undefined,
+      }, i + 1);
     });
 
     const next = [...copies, ...objects];
@@ -1929,6 +2020,11 @@ function openPlateInsert() {
     setSelectedIds(copies.map((o) => o.id));
     setPrimaryId(copies[0]?.id ?? null);
   }
+
+  const deleteSelectedRef = useRef(null);
+  useEffect(() => {
+    deleteSelectedRef.current = deleteSelected;
+  });
 
   useEffect(() => {
     const isTyping = (el) => {
@@ -1951,7 +2047,7 @@ function openPlateInsert() {
       if (e.key === 'Delete') {
         if (isTyping(document.activeElement)) return;
         e.preventDefault();
-        deleteSelected();
+        deleteSelectedRef.current?.();
       }
     };
 
@@ -1961,6 +2057,7 @@ function openPlateInsert() {
 
   // ===== Splitter Drag start =====
   function startDrag(which, e) {
+    if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation?.();
 
@@ -1970,20 +2067,75 @@ function openPlateInsert() {
     startLeftRef.current = leftWidth;
     startRightRef.current = rightWidth;
 
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-
+    bodyDragStylesRef.current = {
+      userSelect: document.body.style.userSelect,
+      cursor: document.body.style.cursor,
+    };
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'col-resize';
+
+    const onMove = (event) => {
+      if (!draggingRef.current) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const dx = event.clientX - startXRef.current;
+
+      if (dragTargetRef.current === 'left') {
+        const nextLeft = Math.max(0, startLeftRef.current + dx);
+        if (canSetLeft(nextLeft)) {
+          setLeftWidth(nextLeft);
+          if (nextLeft > 0) lastLeftOpenRef.current = nextLeft;
+        }
+      } else if (dragTargetRef.current === 'right') {
+        const nextRight = Math.max(0, startRightRef.current - dx);
+        if (canSetRight(nextRight)) {
+          setRightWidth(nextRight);
+          if (nextRight > 0) lastRightOpenRef.current = nextRight;
+        }
+      }
+    };
+    const onEnd = () => endDrag();
+    splitterDragHandlersRef.current = { onMove, onEnd };
+    window.addEventListener('pointermove', onMove, { capture: true, passive: false });
+    window.addEventListener('pointerup', onEnd, true);
+    window.addEventListener('pointercancel', onEnd, true);
+    window.addEventListener('blur', onEnd);
   }
 
-  function endDrag(e) {
+  function endDrag() {
     if (!draggingRef.current) return;
     draggingRef.current = false;
     dragTargetRef.current = null;
-    document.body.style.userSelect = '';
-    document.body.style.cursor = '';
-    e?.currentTarget?.releasePointerCapture?.(e.pointerId);
+    const handlers = splitterDragHandlersRef.current;
+    if (handlers) {
+      window.removeEventListener('pointermove', handlers.onMove, true);
+      window.removeEventListener('pointerup', handlers.onEnd, true);
+      window.removeEventListener('pointercancel', handlers.onEnd, true);
+      window.removeEventListener('blur', handlers.onEnd);
+      splitterDragHandlersRef.current = null;
+    }
+    const styles = bodyDragStylesRef.current;
+    if (styles) {
+      document.body.style.userSelect = styles.userSelect;
+      document.body.style.cursor = styles.cursor;
+      bodyDragStylesRef.current = null;
+    }
   }
+
+  useEffect(() => () => {
+    const handlers = splitterDragHandlersRef.current;
+    if (handlers) {
+      window.removeEventListener('pointermove', handlers.onMove, true);
+      window.removeEventListener('pointerup', handlers.onEnd, true);
+      window.removeEventListener('pointercancel', handlers.onEnd, true);
+      window.removeEventListener('blur', handlers.onEnd);
+    }
+    const styles = bodyDragStylesRef.current;
+    if (styles) {
+      document.body.style.userSelect = styles.userSelect;
+      document.body.style.cursor = styles.cursor;
+    }
+  }, []);
 
   function toggleCollapseLeft() {
     if (leftWidth <= 0) {
@@ -2029,31 +2181,9 @@ function openPlateInsert() {
     return (
       <div
         className={`relative select-none flex-shrink-0 z-20 ${hidden ? 'opacity-60' : ''}`}
-        style={{ width: HIT }}
         title="ドラッグでサイズ変更 / ダブルクリックで折りたたみ"
+        style={{ width: HIT, touchAction: 'none' }}
         onPointerDown={(e) => startDrag(which, e)}
-        onPointerMove={(e) => {
-          if (!draggingRef.current) return;
-          const dx = e.clientX - startXRef.current;
-
-          if (dragTargetRef.current === 'left') {
-            const nextLeft = Math.max(0, startLeftRef.current + dx);
-            if (canSetLeft(nextLeft)) {
-              setLeftWidth(nextLeft);
-              if (nextLeft > 0) lastLeftOpenRef.current = nextLeft;
-            }
-          }
-
-          if (dragTargetRef.current === 'right') {
-            const nextRight = Math.max(0, startRightRef.current - dx);
-            if (canSetRight(nextRight)) {
-              setRightWidth(nextRight);
-              if (nextRight > 0) lastRightOpenRef.current = nextRight;
-            }
-          }
-        }}
-        onPointerUp={(e) => endDrag(e)}
-        onPointerCancel={(e) => endDrag(e)}
         onDoubleClick={(e) => {
           e.preventDefault();
           onDoubleClick?.();
@@ -2083,17 +2213,27 @@ function openPlateInsert() {
     </button>
   );
 
-  const expandedShapeSelection = useMemo(() => expandSelectionToShapes(selectedIds), [selectedIds.join('|'), objects]);
+  const expandedShapeSelection = expandSelectionToShapes(selectedIds);
+  const shapeWeightById = useMemo(
+    () => new Map(shapes.map((shape) => [shape.id, getShapeWeightKg(shape)])),
+    [shapes],
+  );
+  const selectedWeightKg = expandedShapeSelection.reduce((total, id) => total + (shapeWeightById.get(id) ?? 0), 0);
+  const totalDrawingWeightKg = useMemo(
+    () => Array.from(shapeWeightById.values()).reduce((total, weight) => total + weight, 0),
+    [shapeWeightById],
+  );
+  const primaryWeightKg = useMemo(
+    () => shapeWeightById.get(primaryId) ?? 0,
+    [shapeWeightById, primaryId],
+  );
   const canGroup = expandedShapeSelection.length >= 2;
   const canFuse = expandedShapeSelection.length >= 2;
-  const canUngroup = useMemo(() => {
-    for (const id of selectedIds) {
-      if (groupById.get(id)) return true;
-      const s = shapes.find((x) => x.id === id);
-      if (s?.parentGroupId && groupById.get(s.parentGroupId)) return true;
-    }
-    return false;
-  }, [selectedIds.join('|'), shapes, groups, groupById]);
+  const canUngroup = selectedIds.some((id) => {
+    if (groupById.get(id)) return true;
+    const s = shapes.find((x) => x.id === id);
+    return !!(s?.parentGroupId && groupById.get(s.parentGroupId));
+  });
 
   function startSketch2D() {
     setSketchMode({ type: 'sketch2d', step: 'pickFace', objId: null, frame: null, tool: 'line' });
@@ -2236,6 +2376,13 @@ if (norm.length < 3) {
 />     
  <div className="shrink-0 sticky top-0 z-40 bg-white border-b">
         <EditorToolbar
+          totalWeightKg={totalDrawingWeightKg}
+          canRemoveOverlap={!!primaryObject && shapes.length > 1}
+          overlapMessage={overlapMessage}
+          onRemoveOverlap={removeOverlap}
+          canWeld={shapes.length > 1}
+          onWeld={weldOverlaps}
+          weldLengthMm={weldResult && weldResult.source === objects ? weldResult.totalLengthMm : null}
           currentTool={currentTool}
           setTool={(t) => {
             setCurrentTool(t);
@@ -2412,6 +2559,7 @@ if (norm.length < 3) {
             onCommitPanDelta={(delta) => commitPanDelta(delta)}
             showShadows={showShadows}
             showGrid={showGrid}
+            weldSegments={weldResult && weldResult.source === objects ? weldResult.segments : null}
             transparentMode={transparentMode}
             sketchMode={sketchMode}
             onSketchModeChange={(v) => {
@@ -2468,7 +2616,9 @@ if (norm.length < 3) {
   <InspectorPanel
     obj={primaryObject}
     onChange={(patch) => updatePrimary(patch)}
+    weightKg={primaryWeightKg}
     selectedCount={expandedShapeSelection.length}
+    selectedWeightKg={selectedWeightKg}
     onSetColor={(color, applyAll) => setColorForSelection(color, applyAll)}
   />
 ) : null}
@@ -2643,6 +2793,7 @@ if (norm.length < 3) {
                     </button>
                   ))}
                 </div>
+                <div className="text-[10px] text-gray-500">原点を通る選択軸に垂直な面で反転（X選択＝YZ面）</div>
                 <button
                   className={`w-full rounded border px-2 py-1 text-xs hover:bg-gray-50 ${expandedShapeSelection.length === 0 ? 'opacity-40 cursor-not-allowed' : ''}`}
                   type="button"
