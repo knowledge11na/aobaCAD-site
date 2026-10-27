@@ -1,7 +1,7 @@
 // file: components/EditorCanvas.js
 'use client';
 
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { Grid, Outlines, TransformControls, GizmoHelper, GizmoViewport, OrbitControls } from '@react-three/drei';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
@@ -1464,12 +1464,150 @@ function WeldLines({ segments }) {
   );
 }
 
+function BoxSelectController({ enabled, transforming, objectsRef, onBoxSelect, setRect }) {
+  const { gl, camera } = useThree();
+  const transformingRef = useRef(transforming);
+  const callbackRef = useRef(onBoxSelect);
+  useEffect(() => {
+    transformingRef.current = transforming;
+    callbackRef.current = onBoxSelect;
+  });
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const el = gl.domElement;
+    let start = null;
+    let active = false;
+    let suppressClick = false;
+
+    const local = (e) => {
+      const r = el.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top, w: r.width, h: r.height };
+    };
+
+    const onDown = (e) => {
+      if (e.button !== 0) return;
+      start = local(e);
+      active = false;
+    };
+
+    const onMove = (e) => {
+      if (!start) return;
+      if (!(e.buttons & 1) || transformingRef.current) {
+        start = null;
+        setRect(null);
+        return;
+      }
+      const p = local(e);
+      if (!active && Math.hypot(p.x - start.x, p.y - start.y) < 5) return;
+      active = true;
+      setRect({ x1: start.x, y1: start.y, x2: p.x, y2: p.y });
+    };
+
+    const finish = (e) => {
+      if (!start) return;
+      const s = start;
+      start = null;
+      if (!active) return;
+      active = false;
+      setRect(null);
+      suppressClick = true;
+      setTimeout(() => {
+        suppressClick = false;
+      }, 0);
+      const p = local(e);
+      const minX = Math.min(s.x, p.x);
+      const maxX = Math.max(s.x, p.x);
+      const minY = Math.min(s.y, p.y);
+      const maxY = Math.max(s.y, p.y);
+      const crossing = p.x < s.x;
+
+      camera.updateMatrixWorld();
+      const ids = [];
+      for (const shape of objectsRef.current) {
+        let geometry = null;
+        try {
+          geometry = createGeometryInObjectSpace(shape);
+          const bb = geometry.boundingBox;
+          if (!bb) continue;
+          const pose = getPoseMatrix(shape);
+          let sMinX = Infinity;
+          let sMaxX = -Infinity;
+          let sMinY = Infinity;
+          let sMaxY = -Infinity;
+          let behind = false;
+          for (const cx of [bb.min.x, bb.max.x]) {
+            for (const cy of [bb.min.y, bb.max.y]) {
+              for (const cz of [bb.min.z, bb.max.z]) {
+                const v = new THREE.Vector3(cx, cy, cz).applyMatrix4(pose);
+                const cam = v.clone().applyMatrix4(camera.matrixWorldInverse);
+                if (cam.z >= 0) {
+                  behind = true;
+                  continue;
+                }
+                v.project(camera);
+                const sx = ((v.x + 1) / 2) * s.w;
+                const sy = ((1 - v.y) / 2) * s.h;
+                sMinX = Math.min(sMinX, sx);
+                sMaxX = Math.max(sMaxX, sx);
+                sMinY = Math.min(sMinY, sy);
+                sMaxY = Math.max(sMaxY, sy);
+              }
+            }
+          }
+          if (sMinX === Infinity) continue;
+          if (crossing) {
+            if (sMaxX >= minX && sMinX <= maxX && sMaxY >= minY && sMinY <= maxY) ids.push(shape.id);
+          } else if (!behind && sMinX >= minX && sMaxX <= maxX && sMinY >= minY && sMaxY <= maxY) {
+            ids.push(shape.id);
+          }
+        } catch {
+          // 形状が生成できない図形は対象外
+        } finally {
+          geometry?.dispose?.();
+        }
+      }
+      callbackRef.current?.(ids, !!e.shiftKey);
+    };
+
+    const onCancel = () => {
+      start = null;
+      active = false;
+      setRect(null);
+    };
+
+    const onClickCapture = (e) => {
+      if (!suppressClick) return;
+      suppressClick = false;
+      e.stopImmediatePropagation();
+      e.stopPropagation();
+    };
+
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointermove', onMove);
+    el.addEventListener('pointerup', finish);
+    el.addEventListener('pointercancel', onCancel);
+    el.addEventListener('click', onClickCapture, true);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointermove', onMove);
+      el.removeEventListener('pointerup', finish);
+      el.removeEventListener('pointercancel', onCancel);
+      el.removeEventListener('click', onClickCapture, true);
+      setRect(null);
+    };
+  }, [enabled, gl, camera, objectsRef, setRect]);
+
+  return null;
+}
+
 export default function EditorCanvas({
   objects = [],
   selectedIds = [],
   primaryId = null,
   hoveredId = null,
   onSelect,
+  onBoxSelect,
   onHover,
 
   currentTool = 'select',
@@ -1551,6 +1689,7 @@ export default function EditorCanvas({
   const panStartPosRef = useRef(new THREE.Vector3(0, 0, 0));
 
   const [isTransforming, setIsTransforming] = useState(false);
+  const [boxRect, setBoxRect] = useState(null);
   const [bodyMode, setBodyMode] = useState('translate');
 
 useEffect(() => {
@@ -1874,6 +2013,7 @@ function isPickedPoint(objId, kind, p) {
   }, [currentTool, sketchStep, sketchObjId, sketchFrame, drawable]);
 
   return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
     <Canvas
       camera={{ position: [6000, 4000, 6000], fov: 50, near: 1, far: 500000 }}
       shadows={!!showShadows}
@@ -2170,6 +2310,13 @@ function isPickedPoint(objId, kind, p) {
       ) : null}
 
       <CustomCameraControls enabled={!isTransforming} zoomSensitivity={zoomSensitivity} />
+      <BoxSelectController
+        enabled={!mobileViewMode && currentTool === 'select' && selectMode === 'body' && !!onBoxSelect}
+        transforming={isTransforming}
+        objectsRef={drawableRef}
+        onBoxSelect={onBoxSelect}
+        setRect={setBoxRect}
+      />
 
       <OrbitControls ref={gizmoControlsRef} enabled={false} enableRotate={false} enablePan={false} enableZoom={false} />
 
@@ -2177,5 +2324,20 @@ function isPickedPoint(objId, kind, p) {
         <GizmoViewport axisHeadScale={0.9} labelColor="black" />
       </GizmoHelper>
     </Canvas>
+    {boxRect ? (
+      <div
+        style={{
+          position: 'absolute',
+          left: Math.min(boxRect.x1, boxRect.x2),
+          top: Math.min(boxRect.y1, boxRect.y2),
+          width: Math.abs(boxRect.x2 - boxRect.x1),
+          height: Math.abs(boxRect.y2 - boxRect.y1),
+          border: `1px ${boxRect.x2 < boxRect.x1 ? 'dashed' : 'solid'} #2563eb`,
+          background: 'rgba(37,99,235,0.12)',
+          pointerEvents: 'none',
+        }}
+      />
+    ) : null}
+    </div>
   );
 }

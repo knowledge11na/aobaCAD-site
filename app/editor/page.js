@@ -1499,6 +1499,19 @@ function openPlateInsert() {
     else selectSingle(id);
   }
 
+  function handleBoxSelect(ids, additive) {
+    const next = new Set(additive ? selectedIds : []);
+    for (const id of ids) {
+      const s = shapes.find((x) => x.id === id);
+      const pg = s?.parentGroupId;
+      if (pg && groupById.get(pg)) getGroupChildren(pg).forEach((k) => next.add(k));
+      else next.add(id);
+    }
+    const list = Array.from(next);
+    setSelectedIds(list);
+    setPrimaryId(list.includes(primaryId) ? primaryId : list[0] ?? null);
+  }
+
   function handleSelectFromTree(id, evt) {
     const shift = !!evt?.shiftKey;
     if (shift) toggleSelect(id);
@@ -2284,7 +2297,7 @@ function openPlateInsert() {
   }
 
    return (
-     <div className="h-screen flex flex-col min-h-0">
+     <div className="flex flex-col min-h-0" style={{ height: 'calc(100vh - 58px)' }}>
       <FileManagerModal
         open={fileModal.open}
         mode={fileModal.mode}
@@ -2427,7 +2440,7 @@ if (norm.length < 3) {
         />
       </div>
 
-      <div ref={containerRef} className="flex-1 flex min-h-0">
+      <div ref={containerRef} className="flex-1 flex min-h-0" style={{ minHeight: 0, overflow: 'hidden' }}>
         {/* 左：構成ツリー */}
         <aside
           className="border-r bg-white flex flex-col min-h-0 overflow-hidden"
@@ -2435,7 +2448,7 @@ if (norm.length < 3) {
         >
           <div className="border-b px-3 py-2 text-sm font-semibold truncate">構成ツリー</div>
 
-          <div className="flex-1 overflow-auto p-2 space-y-2 text-xs">
+          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-2 text-xs">
             {groups.map((g, gi) => {
               const kids = g.children ?? [];
               const anySelected = kids.some((k) => selectedIds.includes(k));
@@ -2543,6 +2556,7 @@ if (norm.length < 3) {
             primaryId={primaryId}
             hoveredId={hoveredId}
             onSelect={handleSelectFromCanvas}
+            onBoxSelect={handleBoxSelect}
             onHover={setHoveredId}
             currentTool={currentTool}
             selectMode={selectMode}
@@ -2603,7 +2617,7 @@ if (norm.length < 3) {
         >
           <div className="border-b px-3 py-2 text-sm font-semibold truncate">構成ツール</div>
 
-          <div className="flex-1 overflow-auto p-3 space-y-4">
+          <div className="flex-1 min-h-0 overflow-auto p-3 space-y-4">
             <div className="text-xs text-gray-600">
               選択数: <span className="font-semibold">{expandedShapeSelection.length}</span>
             </div>
